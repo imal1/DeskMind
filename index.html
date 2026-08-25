@@ -1,0 +1,707 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>deskmind</title>
+<style>
+  /*
+    Visual language taken from the design (docs/design), layout deliberately not:
+    that file is a fixed 1600x900 mock with absolute coordinates, which would
+    huddle everything against the left edge on an ultrawide. Sizes here scale with
+    the viewport; only the look — glass, gradient veil, drifting blooms, pill
+    controls, the easing curve — is copied verbatim.
+  */
+  :root {
+    --accent: #6f7bb0;
+    --accent-ink: #0a0b0f;
+    --gutter: clamp(26px, 3vw, 76px);
+    --glass-bg: rgba(255, 255, 255, 0.055);
+    --glass-line: rgba(255, 255, 255, 0.09);
+    --glass: blur(34px) saturate(1.25);
+    --ease: cubic-bezier(0.22, 1, 0.36, 1);
+    --ink-96: rgba(255, 255, 255, 0.96);
+    --ink-86: rgba(255, 255, 255, 0.86);
+    --ink-70: rgba(255, 255, 255, 0.7);
+    --ink-50: rgba(255, 255, 255, 0.5);
+    --ink-36: rgba(255, 255, 255, 0.36);
+    --chip: rgba(255, 255, 255, 0.08);
+  }
+
+  @keyframes dmdrift { 0%, 100% { transform: translate3d(0,0,0) scale(1); } 50% { transform: translate3d(3%,-2%,0) scale(1.08); } }
+  @keyframes dmsoft { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+  @keyframes dmtoast { from { opacity: 0; transform: translate(-50%, 12px); } to { opacity: 1; transform: translate(-50%, 0); } }
+  @keyframes dmpop { from { opacity: 0; transform: translate(-50%, -50%) scale(.98); } to { opacity: 1; transform: translate(-50%, -50%) scale(1); } }
+  @keyframes dmmenu { from { opacity: 0; transform: scale(.96) translateY(-4px); } to { opacity: 1; transform: scale(1) translateY(0); } }
+  @keyframes dmbreath { 0%, 100% { opacity: .5; transform: scale(1); } 50% { opacity: .9; transform: scale(1.06); } }
+
+  html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; }
+  body {
+    color: var(--ink-96);
+    font-family: "Noto Sans SC", "Microsoft YaHei", system-ui, sans-serif;
+    font-weight: 300;
+    user-select: none;
+    cursor: default;
+    background: #0a0b0f;
+  }
+  button { font-family: inherit; cursor: pointer; border: none; background: none; color: inherit; }
+  input { font-family: inherit; }
+
+  #stage { position: relative; width: 100%; height: 100vh; overflow: hidden; }
+  /* Holds the backdrop and the interface — everything a panel floats above. The
+     flex column that used to live on #stage lives here, so the layout is
+     unchanged; the wrapper exists purely so the glass has something to capture
+     that excludes the panels themselves. */
+  #world {
+    position: absolute; inset: 0;
+    display: flex; flex-direction: column;
+  }
+
+  /* Backdrop: wallpaper, two drifting blooms in the accent, then a veil that is
+     darker top and bottom — a flat wash reads as a grey sheet instead of depth. */
+  #wall { position: absolute; inset: 0; background: #14161d; background-size: cover; background-position: center; z-index: 0; }
+  .bloom { position: absolute; border-radius: 50%; pointer-events: none; z-index: 1; }
+  #bloomA {
+    left: -14%; top: -26%; width: 70%; height: 110%; opacity: .6;
+    filter: blur(130px);
+    background: radial-gradient(circle, var(--accent), transparent 66%);
+    animation: dmdrift 26s ease-in-out infinite;
+  }
+  #bloomB {
+    right: -18%; bottom: -32%; width: 64%; height: 100%; opacity: .5;
+    filter: blur(150px);
+    background: radial-gradient(circle, var(--accent), transparent 68%);
+    animation: dmdrift 34s ease-in-out infinite reverse;
+  }
+  #veil {
+    position: absolute; inset: 0; z-index: 2; pointer-events: none;
+    background: linear-gradient(180deg,
+      rgba(6, 7, 11, 0.52) 0%,
+      rgba(6, 7, 11, 0.30) 36%,
+      rgba(6, 7, 11, 0.58) 100%);
+  }
+
+  /* Top bar */
+  #top {
+    position: relative; z-index: 9; flex: none;
+    display: flex; align-items: center; gap: clamp(12px, 1.4vw, 22px);
+    padding: clamp(18px, 2vh, 30px) var(--gutter) 0;
+  }
+  #mark {
+    width: 9px; height: 9px; flex: none; border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 0 20px 2px color-mix(in srgb, var(--accent) 60%, transparent);
+  }
+  #wordmark { font-size: 15px; font-weight: 400; letter-spacing: .1em; color: var(--ink-86); }
+  #tabs {
+    display: flex; align-items: center; gap: 2px; padding: 4px; border-radius: 999px;
+    background: var(--glass-bg); backdrop-filter: var(--glass);
+    border: 1px solid var(--glass-line);
+    overflow-x: auto; scrollbar-width: none; max-width: 46vw;
+  }
+  #tabs::-webkit-scrollbar { display: none; }
+  .tab {
+    padding: 8px 16px; border-radius: 999px; white-space: nowrap;
+    font-size: 13px; font-weight: 300; color: rgba(255, 255, 255, 0.55);
+    transition: all .35s var(--ease);
+  }
+  .tab:hover { color: var(--ink-86); }
+  .tab.on { background: var(--accent); color: var(--accent-ink); font-weight: 400; }
+  .tab.dropping { background: rgba(255, 255, 255, 0.3); color: #fff; }
+
+  #topright { margin-left: auto; display: flex; align-items: center; gap: clamp(10px, 1vw, 16px); }
+  .pill {
+    padding: 7px 14px; border-radius: 999px; white-space: nowrap;
+    font-size: 12px; font-weight: 300;
+    color: rgba(255, 255, 255, 0.75);
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    transition: all .35s var(--ease);
+  }
+  .pill:hover { color: #fff; background: rgba(255, 255, 255, 0.1); }
+  #tidybtn { color: var(--accent-ink); background: var(--accent); border-color: transparent; font-weight: 400; }
+  #tidybtn:hover { filter: brightness(1.08); background: var(--accent); color: var(--accent-ink); }
+  #tidybtn:disabled { opacity: .55; cursor: default; }
+  #searchbtn { display: flex; align-items: center; gap: 9px; background: rgba(255, 255, 255, 0.07); border-color: rgba(255, 255, 255, 0.08); }
+  #searchbtn .key { font-size: 10.5px; padding: 2px 7px; border-radius: 999px; background: var(--chip); color: var(--ink-50); }
+  #summary { font-size: 12.5px; color: var(--ink-50); }
+  #clock { font-size: 15px; letter-spacing: .04em; color: rgba(255, 255, 255, 0.8); }
+
+  /* Selected-target detail. Width tracks the viewport so an ultrawide gets a
+     roomier column instead of the mock's fixed 580px stranded on the left. */
+  #hero {
+    position: relative; z-index: 7; flex: 1;
+    display: flex; flex-direction: column; justify-content: center;
+    gap: clamp(14px, 1.6vh, 20px);
+    padding: 0 var(--gutter);
+    width: min(620px, 48vw);
+    min-height: 0;
+  }
+  #heroline { display: flex; align-items: center; gap: 18px; }
+  #heroico {
+    width: clamp(58px, 4.4vw, 76px); aspect-ratio: 1; flex: none;
+    border-radius: 20px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: clamp(22px, 1.7vw, 29px); font-weight: 400;
+    background-color: rgba(255, 255, 255, 0.09);
+    background-size: 62%; background-repeat: no-repeat; background-position: center;
+    box-shadow: 0 14px 34px -12px rgba(0, 0, 0, .7), inset 0 1px 0 rgba(255, 255, 255, .35);
+  }
+  #herotext { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+  #herometa { font-size: 12.5px; letter-spacing: .06em; color: var(--ink-50); }
+  #herotitle {
+    font-size: clamp(28px, 2.9vw, 46px); font-weight: 300; line-height: 1.05;
+    letter-spacing: .005em; color: var(--ink-96);
+    text-shadow: 0 2px 30px rgba(0, 0, 0, .4);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  #heropath {
+    font-size: 13px; line-height: 1.75; color: rgba(255, 255, 255, 0.46);
+    max-width: 560px; word-break: break-all;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+  }
+  #heroacts { display: flex; gap: 12px; align-items: center; }
+  #open {
+    padding: 13px 34px; border-radius: 999px;
+    font-size: 15px; font-weight: 400; letter-spacing: .04em;
+    color: var(--accent-ink); background: var(--accent);
+    box-shadow: 0 14px 40px -14px var(--accent);
+    transition: all .35s var(--ease);
+  }
+  #open:hover { filter: brightness(1.08); }
+  #more {
+    width: 46px; height: 46px; border-radius: 50%; font-size: 17px; line-height: 1;
+    backdrop-filter: blur(20px);
+    color: rgba(255, 255, 255, 0.72);
+    background: rgba(255, 255, 255, 0.07);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    transition: all .35s var(--ease);
+  }
+  #more:hover { color: #fff; background: rgba(255, 255, 255, 0.13); }
+
+  /* Tile rail. The container is glass with every edge masked out, so tiles fade
+     rather than getting clipped at a hard border. */
+  #shelf {
+    position: relative; z-index: 7; flex: none;
+    margin: 0 var(--gutter) clamp(10px, 1.4vh, 20px);
+    padding: clamp(20px, 2.4vh, 40px) clamp(18px, 1.8vw, 34px) 20px;
+    display: flex; flex-direction: column; gap: 14px;
+    background: var(--glass-bg); backdrop-filter: var(--glass);
+    /* Percentage stops, not the design's pixel ones: those cross over and invert
+       the mask — turning the whole shelf transparent — whenever the container is
+       shorter than about 70px. Percentages cannot invert at any height. */
+    -webkit-mask-image:
+      linear-gradient(180deg, transparent 0, #000 14%, #000 94%, transparent 100%),
+      linear-gradient(90deg, transparent 0, #000 3%, #000 97%, transparent 100%);
+    -webkit-mask-composite: source-in;
+    mask-image:
+      linear-gradient(180deg, transparent 0, #000 14%, #000 94%, transparent 100%),
+      linear-gradient(90deg, transparent 0, #000 3%, #000 97%, transparent 100%);
+    mask-composite: intersect;
+  }
+  /* The rail and the top controls take their treatment from the chosen effect.
+     Highlight follows iOS 27's navigation chrome: clear rather than frosted, a
+     bright hairline along the top edge, buttons that read as lit glass. */
+  [data-effect="highlight"] #shelf {
+    background: rgba(255, 255, 255, 0.035);
+    backdrop-filter: blur(12px) saturate(1.5) brightness(1.12);
+    border-top: 1px solid rgba(255, 255, 255, 0.22);
+    border-radius: 26px 26px 0 0;
+  }
+  [data-effect="highlight"] .tile {
+    background: rgba(255, 255, 255, 0.10);
+    border-color: rgba(255, 255, 255, 0.20);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.32);
+  }
+  [data-effect="highlight"] .tile.on {
+    background: rgba(255, 255, 255, 0.20);
+    border-color: rgba(255, 255, 255, 0.42);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.5), 0 22px 50px -24px rgba(0, 0, 0, .8);
+  }
+  [data-effect="highlight"] #tabs,
+  [data-effect="highlight"] .pill,
+  [data-effect="highlight"] .page {
+    background: rgba(255, 255, 255, 0.12);
+    border-color: rgba(255, 255, 255, 0.26);
+    backdrop-filter: blur(12px) saturate(1.5) brightness(1.12);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.34);
+  }
+  /* Spelled out by id, not just `.pill`: #searchbtn and #setbtn carry their own
+     id rules, and an id beats an attribute-plus-class every time. */
+  [data-effect="highlight"] #searchbtn,
+  [data-effect="highlight"] #setbtn {
+    background: rgba(255, 255, 255, 0.14);
+    border-color: rgba(255, 255, 255, 0.28);
+    color: rgba(255, 255, 255, 0.88);
+    backdrop-filter: blur(12px) saturate(1.5) brightness(1.12);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.34);
+  }
+  [data-effect="highlight"] #searchbtn:hover,
+  [data-effect="highlight"] #setbtn:hover { background: rgba(255, 255, 255, 0.22); color: #fff; }
+  [data-effect="highlight"] #searchbtn .key { background: rgba(255, 255, 255, 0.22); color: rgba(255, 255, 255, 0.8); }
+  [data-effect="highlight"] #tidybtn { background: var(--accent); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.4); }
+
+  [data-effect="none"] #searchbtn,
+  [data-effect="none"] #setbtn {
+    backdrop-filter: none;
+    background: rgba(0, 0, 0, 0.22);
+    border-color: rgba(255, 255, 255, 0.12);
+  }
+
+  /* 纯净: no chrome at all, just the wallpaper and the content on it. */
+  [data-effect="none"] #shelf {
+    background: none;
+    backdrop-filter: none;
+    -webkit-mask-image: none;
+    mask-image: none;
+  }
+  [data-effect="none"] #tabs,
+  [data-effect="none"] .pill,
+  [data-effect="none"] .page {
+    backdrop-filter: none;
+    background: rgba(0, 0, 0, 0.22);
+    border-color: rgba(255, 255, 255, 0.12);
+  }
+  [data-effect="none"] #tidybtn { background: var(--accent); }
+
+  #shelfhead { display: flex; align-items: center; gap: 14px; padding: 0 6px; }
+  #railtitle { font-size: 15px; letter-spacing: .08em; }
+  #railmeta { font-size: 12px; color: var(--ink-50); }
+  #pager { margin-left: auto; display: flex; gap: 6px; }
+  .page {
+    width: 30px; height: 30px; border-radius: 999px; line-height: 1; font-size: 15px;
+    color: rgba(255, 255, 255, 0.6);
+    background: rgba(255, 255, 255, 0.06);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    transition: all .35s var(--ease);
+  }
+  .page:hover { color: #fff; background: rgba(255, 255, 255, 0.13); }
+
+  #rail { display: flex; gap: 16px; overflow-x: auto; padding: 6px 6px 10px; scroll-behavior: smooth; scrollbar-width: none; }
+  #rail::-webkit-scrollbar { display: none; }
+  .tile {
+    position: relative; flex: none;
+    width: clamp(104px, 7.4vw, 124px);
+    padding: 18px 12px 15px; border-radius: 22px;
+    background: rgba(255, 255, 255, 0.06);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    display: flex; flex-direction: column; align-items: center; gap: 12px;
+    transition: width .4s var(--ease), transform .4s var(--ease), background .3s var(--ease);
+  }
+  .tile:hover { background: rgba(255, 255, 255, 0.1); }
+  /* The selected tile widens rather than gaining an outline — the design keeps
+     every emphasis soft, no neon borders anywhere. */
+  .tile.on {
+    width: clamp(136px, 9.8vw, 164px);
+    background: rgba(255, 255, 255, 0.13);
+    border-color: rgba(255, 255, 255, 0.2);
+    transform: translateY(-6px);
+    box-shadow: 0 22px 50px -24px rgba(0, 0, 0, .9);
+  }
+  .tile.dragging { opacity: .4; }
+  .tileico {
+    width: clamp(38px, 3vw, 46px); aspect-ratio: 1; border-radius: 12px;
+    background-color: rgba(255, 255, 255, 0.07);
+    background-size: contain; background-repeat: no-repeat; background-position: center;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 17px; color: var(--ink-50);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, .2);
+  }
+  .tilename {
+    font-size: 12.5px; text-align: center; line-height: 1.45; color: var(--ink-86);
+    max-width: 100%; overflow: hidden; text-overflow: ellipsis;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  }
+  .tilepin { position: absolute; top: 11px; right: 11px; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
+  #railempty { font-size: 13px; color: var(--ink-50); padding: 26px 6px; }
+
+  #hints {
+    position: relative; z-index: 9; flex: none;
+    display: flex; align-items: center; gap: clamp(14px, 1.6vw, 24px);
+    padding: 0 calc(var(--gutter) + 6px) clamp(14px, 2vh, 26px);
+    font-size: 11.5px; color: var(--ink-36);
+  }
+  #hints .k {
+    font-size: 11px; padding: 2px 7px; border-radius: 999px; margin-right: 6px;
+    background: var(--chip); color: var(--ink-50);
+  }
+
+  /* Floating surfaces */
+  #scrim { position: absolute; inset: 0; z-index: 20; background: rgba(6, 7, 10, 0.5); backdrop-filter: blur(3px); }
+  /* Highlight lifts the panel instead of pushing the rest of the screen down, so
+     nothing dims behind it. The box stays — it is still what a click outside a
+     panel lands on — it just stops painting. */
+  [data-effect="highlight"] #scrim { background: transparent; backdrop-filter: none; }
+  .panel {
+    position: absolute; left: 50%; z-index: 21;
+    border-radius: 24px;
+    background: rgba(20, 22, 29, 0.72); backdrop-filter: var(--glass);
+    border: 1px solid var(--glass-line);
+    /* Tight rather than the design's wide bloom: against clear glass a broad
+       soft shadow reads as a smudge around the panel instead of as depth. */
+    box-shadow: 0 12px 32px -18px rgba(0, 0, 0, .8);
+  }
+
+  /* When the shader is drawing refractive glass behind a panel, the panel gets
+     out of its way: the darkening that keeps text legible happens inside the
+     glass, so a second opaque layer here would bury the refraction. */
+  /* When the shader owns a panel it owns the whole surface: frosting, tint,
+     hairline border and shadow. The DOM keeps only the contents.
+     Two systems each painting half a panel is what produced the doubled frames,
+     mismatched corners and muddy shadows — there is now exactly one. */
+  .panel.glassed {
+    background: none;
+    backdrop-filter: none;
+    border-color: transparent;
+    box-shadow: none;
+  }
+
+  /* Panels fade in without moving. The shader is handed a rectangle measured in
+     CSS pixels and cannot follow a CSS transform, so a sliding entry would force
+     us to wait for it to finish before the glass could appear — which is exactly
+     the delay this removes. */
+  @keyframes dmfade { from { opacity: 0; } to { opacity: 1; } }
+  #search, #settings, #first { animation: dmfade .2s var(--ease) both; }
+
+  #search { top: 14vh; transform: translateX(-50%); width: min(640px, 84vw); overflow: hidden; animation: dmsoft .3s var(--ease) both; }
+  #searchbar { display: flex; align-items: center; gap: 14px; padding: 19px 24px; }
+  #dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); flex: none; }
+  #q { flex: 1; border: none; outline: none; background: none; color: #fff; font-size: 17px; font-weight: 300; }
+  #q::placeholder { color: rgba(255, 255, 255, 0.3); }
+  .esc { font-size: 11px; padding: 2px 8px; border-radius: 999px; flex: none; background: var(--chip); color: var(--ink-50); }
+  #results { border-top: 1px solid rgba(255, 255, 255, 0.07); padding: 9px; display: flex; flex-direction: column; gap: 2px; max-height: 46vh; overflow-y: auto; scrollbar-width: none; }
+  #results::-webkit-scrollbar { display: none; }
+  .res { display: flex; align-items: center; gap: 13px; padding: 10px 14px; border-radius: 14px; font-size: 13.5px; transition: background .2s var(--ease); }
+  .res.on { background: rgba(255, 255, 255, 0.09); }
+  .resico {
+    width: 26px; height: 26px; flex: none; border-radius: 8px;
+    background-color: rgba(255, 255, 255, 0.07);
+    background-size: contain; background-repeat: no-repeat; background-position: center;
+    display: flex; align-items: center; justify-content: center; font-size: 11px; color: var(--ink-50);
+  }
+  .resname { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--ink-86); }
+  .ressrc { font-size: 11px; color: var(--ink-36); flex: none; }
+  #nores { padding: 28px; text-align: center; font-size: 13px; color: var(--ink-50); }
+
+  #settings {
+    top: 10vh; transform: translateX(-50%); width: min(580px, 88vw);
+    padding: 28px; display: flex; flex-direction: column; gap: 22px;
+    max-height: 76vh; overflow-y: auto; scrollbar-width: none;
+    animation: dmsoft .3s var(--ease) both;
+  }
+  #settings::-webkit-scrollbar { display: none; }
+  #sethead { display: flex; align-items: baseline; justify-content: space-between; }
+  #settitle { font-size: 19px; letter-spacing: .04em; }
+  .field { display: flex; flex-direction: column; gap: 9px; }
+  .flabel { font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: rgba(255, 255, 255, 0.42); }
+  .fhint { font-size: 11.5px; color: var(--ink-36); line-height: 1.65; }
+  .finput {
+    padding: 12px 15px; border-radius: 14px; outline: none;
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    color: #fff; font-size: 13.5px; font-weight: 300;
+    transition: all .3s var(--ease);
+  }
+  .finput:focus { border-color: color-mix(in srgb, var(--accent) 55%, transparent); background: rgba(255, 255, 255, 0.08); }
+  .frow {
+    display: flex; align-items: center; justify-content: space-between; gap: 16px;
+    padding: 14px 16px; border-radius: 16px;
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+  }
+  .switch {
+    width: 42px; height: 24px; border-radius: 999px; flex: none; padding: 3px;
+    background: rgba(255, 255, 255, 0.12);
+    border: 1px solid rgba(255, 255, 255, 0.16);
+    display: flex; align-items: center; transition: background .3s var(--ease);
+  }
+  .switch.on { background: var(--accent); border-color: transparent; }
+  .knob { width: 18px; height: 18px; border-radius: 50%; background: #fff; transition: transform .3s var(--ease); }
+  .switch.on .knob { transform: translateX(18px); }
+  .segmented {
+    display: flex; gap: 3px; padding: 4px; border-radius: 999px;
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+  }
+  .segmented button {
+    flex: 1; padding: 8px 0; border-radius: 999px;
+    font-size: 12.5px; font-weight: 300; color: rgba(255, 255, 255, 0.55);
+    transition: all .35s var(--ease);
+  }
+  .segmented button:hover { color: var(--ink-86); }
+  .segmented button.on { background: var(--accent); color: var(--accent-ink); font-weight: 400; }
+  #setzones { display: flex; flex-direction: column; gap: 6px; }
+  .zrow {
+    display: flex; align-items: center; gap: 10px;
+    padding: 9px 11px; border-radius: 14px;
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+  }
+  .zrow.dragging { opacity: .4; }
+  .zgrip { flex: none; cursor: grab; user-select: none; color: rgba(255, 255, 255, 0.28); font-size: 13px; letter-spacing: -1px; }
+  .zname {
+    flex: 1; min-width: 0; padding: 5px 9px; border-radius: 9px; outline: none;
+    background: none; border: 1px solid transparent;
+    color: var(--ink-86); font-size: 13.5px; font-weight: 300;
+  }
+  .zname:hover { border-color: rgba(255, 255, 255, 0.14); }
+  .zname:focus { border-color: color-mix(in srgb, var(--accent) 55%, transparent); background: rgba(255, 255, 255, 0.07); }
+  .zcount { font-size: 11.5px; color: var(--ink-36); flex: none; }
+  .zdel {
+    padding: 5px 11px; border-radius: 999px; flex: none;
+    border: 1px solid rgba(255, 255, 255, 0.13);
+    color: rgba(255, 255, 255, 0.55); font-size: 11.5px; font-weight: 300;
+    transition: all .3s var(--ease);
+  }
+  .zdel:hover { color: #fff; border-color: rgba(255, 255, 255, 0.3); }
+  #addzone { cursor: pointer; text-align: left; }
+  #setfoot { display: flex; gap: 12px; align-items: center; }
+  #setsave {
+    padding: 11px 26px; border-radius: 999px;
+    color: var(--accent-ink); background: var(--accent);
+    font-size: 13.5px; font-weight: 400;
+    box-shadow: 0 14px 40px -18px var(--accent);
+    transition: all .35s var(--ease);
+  }
+  #setsave:hover { filter: brightness(1.08); }
+  #setcancel {
+    padding: 11px 20px; border-radius: 999px;
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    color: rgba(255, 255, 255, 0.6); font-size: 13.5px; font-weight: 300;
+    transition: all .3s var(--ease);
+  }
+  #setcancel:hover { color: #fff; border-color: rgba(255, 255, 255, 0.3); }
+  #setmsg { font-size: 12px; color: var(--ink-50); }
+
+  #first {
+    top: 50%; transform: translate(-50%, -50%); width: min(600px, 88vw);
+    padding: 34px; display: flex; flex-direction: column; gap: 20px;
+    animation: dmpop .35s var(--ease) both;
+  }
+  #fdots { display: flex; align-items: center; gap: 8px; }
+  .fdot { width: 6px; height: 6px; border-radius: 50%; background: rgba(255, 255, 255, 0.18); transition: background .35s var(--ease); }
+  .fdot.on { background: var(--accent); }
+  #fstep { margin-left: 6px; font-size: 11.5px; color: var(--ink-36); }
+  #ftitle { font-size: clamp(22px, 2vw, 28px); font-weight: 300; line-height: 1.25; }
+  #fbody { font-size: 14px; line-height: 1.75; color: rgba(255, 255, 255, 0.62); }
+  #fcontent { display: flex; flex-direction: column; gap: 12px; min-height: 92px; }
+  #fbar { height: 2px; border-radius: 2px; background: rgba(255, 255, 255, 0.12); overflow: hidden; }
+  #fbarfill { height: 100%; width: 40%; border-radius: 2px; background: linear-gradient(90deg, transparent, var(--accent)); animation: slide 1.4s ease-in-out infinite; }
+  @keyframes slide { 0% { margin-left: -40%; } 100% { margin-left: 100%; } }
+  #ffoot { display: flex; align-items: center; gap: 14px; }
+  #fnext {
+    padding: 12px 30px; border-radius: 999px;
+    color: var(--accent-ink); background: var(--accent);
+    font-size: 14px; font-weight: 400; letter-spacing: .03em;
+    box-shadow: 0 14px 40px -16px var(--accent);
+    transition: all .35s var(--ease);
+  }
+  #fnext:hover { filter: brightness(1.08); }
+  #fnext:disabled { opacity: .45; cursor: default; box-shadow: none; }
+  #fskip { color: var(--ink-36); font-size: 12.5px; font-weight: 300; }
+  #fskip:hover { color: var(--ink-86); }
+  #ferr { font-size: 12px; color: rgba(255, 255, 255, 0.55); line-height: 1.6; }
+
+  #ctx {
+    position: absolute; z-index: 25; min-width: 200px; padding: 7px;
+    border-radius: 16px;
+    background: rgba(22, 24, 32, 0.8); backdrop-filter: var(--glass);
+    border: 1px solid var(--glass-line);
+    box-shadow: 0 10px 28px -16px rgba(0, 0, 0, .85);
+    display: flex; flex-direction: column; gap: 1px;
+    animation: dmmenu .18s var(--ease) both;
+  }
+  #ctxhead { font-size: 11px; color: var(--ink-36); padding: 8px 12px 9px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .ctxitem {
+    text-align: left; padding: 10px 13px; border-radius: 12px;
+    color: var(--ink-86); font-size: 13px; font-weight: 300;
+    transition: background .2s var(--ease);
+  }
+  .ctxitem:hover { background: rgba(255, 255, 255, 0.09); }
+  .ctxsep { height: 1px; margin: 5px 9px; background: rgba(255, 255, 255, 0.08); }
+
+  #toast {
+    position: absolute; left: 50%; bottom: clamp(120px, 16vh, 190px); transform: translateX(-50%);
+    z-index: 26; display: flex; align-items: center; gap: 14px;
+    padding: 15px 19px; border-radius: 18px;
+    background: rgba(22, 24, 32, 0.8); backdrop-filter: var(--glass);
+    border: 1px solid var(--glass-line);
+    box-shadow: 0 10px 28px -16px rgba(0, 0, 0, .85);
+    animation: dmtoast .3s var(--ease);
+  }
+  #toastdot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); flex: none; }
+  #toasttitle { font-size: 13.5px; color: var(--ink-96); }
+  #toastsub { font-size: 11.5px; color: var(--ink-50); margin-top: 3px; }
+  #toastact {
+    padding: 7px 16px; border-radius: 999px; margin-left: 6px;
+    color: var(--accent-ink); background: var(--accent);
+    font-size: 12px; font-weight: 400;
+    transition: all .3s var(--ease);
+  }
+  #toastact:hover { filter: brightness(1.08); }
+
+  .hide { display: none !important; }
+</style>
+</head>
+<body>
+  <div id="stage">
+    <!-- Everything the glass is allowed to refract. Panels live outside it, so
+         capturing this element can never feed a panel back into itself. -->
+    <div id="world">
+    <div id="wall"></div>
+    <div class="bloom" id="bloomA"></div>
+    <div class="bloom" id="bloomB"></div>
+    <div id="veil"></div>
+
+    <div id="top">
+      <div id="mark"></div>
+      <div id="wordmark">deskmind</div>
+      <div id="tabs"></div>
+      <div id="topright">
+        <button id="tidybtn" class="pill">整理</button>
+        <button id="setbtn" class="pill">设置</button>
+        <button id="searchbtn" class="pill">搜索启动项 <span class="key">Alt Space</span></button>
+        <div id="summary"></div>
+        <div id="clock"></div>
+      </div>
+    </div>
+
+    <div id="hero">
+      <div id="heroline">
+        <div id="heroico"></div>
+        <div id="herotext">
+          <div id="herometa"></div>
+          <div id="herotitle"></div>
+        </div>
+      </div>
+      <div id="heropath"></div>
+      <div id="heroacts">
+        <button id="open">打开</button>
+        <button id="more">⋯</button>
+      </div>
+    </div>
+
+    <div id="shelf">
+      <div id="shelfhead">
+        <div id="railtitle"></div>
+        <div id="railmeta"></div>
+        <div id="pager">
+          <button class="page" id="left">‹</button>
+          <button class="page" id="right">›</button>
+        </div>
+      </div>
+      <div id="rail"></div>
+    </div>
+
+    <div id="hints">
+      <span><span class="k">← →</span>选择</span>
+      <span><span class="k">Tab</span>换分区</span>
+      <span><span class="k">Enter</span>打开</span>
+      <span><span class="k">打字</span>搜索</span>
+      <span><span class="k">Esc</span>收起</span>
+    </div>
+    </div><!-- /world -->
+
+    <div id="ctx" class="hide"></div>
+
+    <div id="toast" class="hide">
+      <div id="toastdot"></div>
+      <div>
+        <div id="toasttitle"></div>
+        <div id="toastsub"></div>
+      </div>
+      <button id="toastact" class="hide"></button>
+    </div>
+
+    <div id="scrim" class="hide"></div>
+
+    <div id="first" class="panel hide">
+      <div id="fdots">
+        <div class="fdot"></div><div class="fdot"></div>
+        <div class="fdot"></div><div class="fdot"></div>
+        <div id="fstep"></div>
+      </div>
+      <div id="ftitle"></div>
+      <div id="fbody"></div>
+      <div id="fcontent"></div>
+      <div id="ffoot">
+        <button id="fnext"></button>
+        <button id="fskip">跳过</button>
+        <div id="ferr"></div>
+      </div>
+    </div>
+
+    <div id="settings" class="panel hide">
+      <div id="sethead">
+        <div id="settitle">设置</div>
+        <span class="esc">esc</span>
+      </div>
+
+      <div class="field">
+        <div class="flabel">API key</div>
+        <input id="setkey" class="finput" type="password" autocomplete="off" spellcheck="false" />
+        <div class="fhint">存进 Windows 凭据管理器，不写进配置文件、不随配置同步。整理时只把启动项的名字发给模型，不发路径、不发文件内容。</div>
+      </div>
+
+      <div class="field">
+        <div class="flabel">模型</div>
+        <input id="setmodel" class="finput" autocomplete="off" spellcheck="false" />
+      </div>
+
+      <div class="field">
+        <div class="flabel">接口地址</div>
+        <input id="seturl" class="finput" autocomplete="off" spellcheck="false" />
+        <div class="fhint">任何 OpenAI 兼容的服务都能用，换服务只需要改这里和模型名。</div>
+      </div>
+
+      <div class="frow">
+        <div>
+          <div style="font-size: 13.5px">开机启动</div>
+          <div class="fhint">开机后驻留托盘，随时用热键唤出</div>
+        </div>
+        <div class="switch" id="setauto"><div class="knob"></div></div>
+      </div>
+
+      <div class="frow">
+        <div>
+          <div style="font-size: 13.5px">唤出热键</div>
+          <div class="fhint">暂时固定，自定义热键还没做</div>
+        </div>
+        <div style="font-size: 12.5px; color: rgba(255,255,255,.6)">Alt + Space</div>
+      </div>
+
+      <div class="field">
+        <div class="flabel">背景特效</div>
+        <div id="seteffect" class="segmented">
+          <button data-effect="highlight">高亮</button>
+          <button data-effect="fog">雾影</button>
+          <button data-effect="none">纯净</button>
+        </div>
+        <div class="fhint">高亮：光带掠过壁纸，背景提亮，面板是极清玻璃。雾影：缓慢流动的雾，背景压暗。纯净：只有壁纸，没有遮罩也没有玻璃。被遮挡时都会停止绘制。</div>
+      </div>
+
+      <div class="field">
+        <div class="flabel">分区</div>
+        <div id="setzones"></div>
+        <button id="addzone" class="finput">＋ 新建分区</button>
+        <div class="fhint">改名不影响已有归属。删除分区后里面的启动项变成未分类，下次整理时重新归入。拖动手柄可以调整顺序。</div>
+      </div>
+
+      <div id="setfoot">
+        <button id="setsave">保存</button>
+        <button id="setcancel">取消</button>
+        <div id="setmsg"></div>
+      </div>
+    </div>
+
+    <div id="search" class="panel hide">
+      <div id="searchbar">
+        <div id="dot"></div>
+        <input id="q" type="text" placeholder="搜索启动项" autocomplete="off" spellcheck="false" />
+        <span class="esc">esc</span>
+      </div>
+      <div id="results"></div>
+    </div>
+  </div>
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>

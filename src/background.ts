@@ -1,0 +1,656 @@
+/**
+ * The scene layer — effects D and B of ADR 0016.
+ *
+ * One fullscreen shader composes everything behind the interface: the wallpaper,
+ * slowly drifting fog tinted by the wallpaper's own colour, and refractive glass
+ * for panels floating above it.
+ *
+ * The glass refracts the **live interface**, captured through HTML-in-Canvas: the
+ * tiles, text and rail under a panel bend with it. An earlier version composed
+ * the backdrop procedurally instead, which was cheaper and needed no flag, but it
+ * could only ever distort the wallpaper — and glass over a photograph reads as a
+ * filter, not as glass. Distorting the content is what sells it.
+ *
+ * When the capture is unavailable — the API is behind a flag and still an origin
+ * trial — the procedural path is still there and takes over silently.
+ *
+ * Raw WebGL2, no library (see ADR 0016). Rendering stops entirely when the
+ * surface is covered — S4 measured requestAnimationFrame running at full rate
+ * behind a maximised window.
+ */
+
+import { invoke } from "@tauri-apps/api/core";
+import { createCapture, type Capture } from "./capture";
+
+type Occlusion = { occluded: boolean };
+
+/**
+ * Background treatments offered in settings. They differ in more than the panel
+ * rim: each also decides how the wallpaper itself is veiled — highlight lifts it,
+ * fog pushes it back, none leaves it alone and drops the glass entirely.
+ */
+export type EffectName = "highlight" | "fog" | "none";
+
+export type GlassRect = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  radius: number;
+};
+
+const VERT = `#version 300 es
+in vec2 pos;
+void main() { gl_Position = vec4(pos, 0.0, 1.0); }`;
+
+const FRAG = `#version 300 es
+precision highp float;
+out vec4 outColor;
+
+uniform vec2 res;
+uniform float time;
+uniform vec3 accent;
+uniform sampler2D wallpaper;
+uniform float hasWallpaper;
+uniform float wallAspect;
+const int MAX_GLASS = 6;
+uniform vec4 glassRect[MAX_GLASS];   // x, y, width, height in pixels, y from the bottom
+uniform float glassRadius[MAX_GLASS];
+uniform int glassCount;
+uniform float glassAmount;
+uniform vec3 veil;       // darkening alpha at the bottom, middle and top
+uniform float dim;       // scrim strength while a panel is up
+uniform float glassOnly; // 1 for the layer that draws nothing but the glass
+uniform int effect;      // 0 none, 1 fog, 2 highlight
+uniform sampler2D ui;    // the live interface, captured through HTML-in-Canvas
+uniform float hasUi;     // 0 when the capture is unavailable
+
+float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+
+float noise(vec2 p) {
+  vec2 i = floor(p), f = fract(p);
+  vec2 u = f * f * (3.0 - 2.0 * f);
+  return mix(mix(hash(i), hash(i + vec2(1, 0)), u.x),
+             mix(hash(i + vec2(0, 1)), hash(i + vec2(1, 1)), u.x), u.y);
+}
+
+float fbm(vec2 p) {
+  float v = 0.0, a = 0.5;
+  for (int i = 0; i < 4; i++) { v += a * noise(p); p *= 2.03; a *= 0.5; }
+  return v;
+}
+
+/// Cover-fit, so a wallpaper of any shape fills an ultrawide without stretching.
+vec2 coverUv(vec2 uv) {
+  float screen = res.x / res.y;
+  // Sample a narrower slice of whichever axis has to be cropped.
+  vec2 scale = screen > wallAspect
+    ? vec2(1.0, wallAspect / screen)
+    : vec2(screen / wallAspect, 1.0);
+  return (uv - 0.5) * scale + 0.5;
+}
+
+/// Everything behind the interface, sampled at an arbitrary point. The glass
+/// calls this with bent coordinates; everywhere else calls it straight.
+vec3 scene(vec2 uv, float lod) {
+  // Mip level as blur. The wallpaper is our own texture, so a blurred read costs
+  // one sample instead of the dozens a gaussian would need — which is what makes
+  // it affordable to draw the panel's frosting here rather than in CSS.
+  vec3 base = hasWallpaper > 0.5
+    ? textureLod(wallpaper, clamp(coverUv(uv), 0.0, 1.0), lod).rgb
+    : vec3(0.07, 0.08, 0.11);
+
+  // Aspect-corrected so nothing smears into streaks on a wide screen.
+  vec2 p = vec2(uv.x * (res.x / res.y), uv.y);
+  vec3 col = base;
+
+  if (effect == 1) {
+    // Fog: soft drifting volume, tinted by the wallpaper.
+    vec2 warp = vec2(fbm(p * 1.6 + time * 0.014), fbm(p * 1.6 - time * 0.011));
+    float f = fbm(p * 2.2 + warp * 1.5 + time * 0.006);
+
+    vec3 cool = accent * 0.72;
+    vec3 warm = mix(accent, vec3(0.86, 0.62, 0.72), 0.42);
+    vec3 fog = mix(cool, warm, smoothstep(0.25, 0.85, f)) * (0.4 + f * 0.6);
+
+    // Heaviest at the edges, thin through the middle.
+    float edge = smoothstep(0.0, 0.55, abs(uv.y - 0.5) * 2.0);
+    col = mix(base, fog, (0.10 + f * 0.30) * (0.55 + edge * 0.45));
+  } else if (effect == 2) {
+    // Highlight: crossing bands of light that drift, sharpened so they stay thin
+    // and clean. Where fog adds volume, this adds sheen — the wallpaper is left
+    // mostly alone and only catches the light.
+    float a = sin((p.x * 1.2 + p.y * 0.6) * 2.4 + time * 0.25) * 0.5 + 0.5;
+    float b = sin((p.x * -0.8 + p.y * 1.4) * 1.7 - time * 0.19) * 0.5 + 0.5;
+    float s = pow(a * b, 6.0);
+    // A slow wander so the bands never sit still enough to look like a texture.
+    s *= 0.7 + 0.3 * fbm(p * 0.9 + time * 0.02);
+    col = base + mix(vec3(1.0), accent, 0.45) * s * 0.5;
+  }
+
+  // The veil belongs in here rather than in a DOM layer above the canvas: it is
+  // part of the backdrop, so the glass has to refract it along with everything
+  // else. A CSS layer stacked on top would sit over the refraction and hide it.
+  //
+  // Each mode veils differently, which is most of what separates them:
+  //   fog       a dark wash, the wallpaper sits back
+  //   highlight a luminous one, the wallpaper is lifted rather than pushed down
+  //   none      nothing at all
+  float a = uv.y < 0.5
+    ? mix(veil.x, veil.y, smoothstep(0.0, 0.5, uv.y))
+    : mix(veil.y, veil.z, smoothstep(0.5, 1.0, uv.y));
+
+  if (effect == 0) return col;
+  // Highlight keeps a veil, but a dark and light-handed one. Brightening the
+  // whole wallpaper was glaring, and the lift belongs on the panels and the rail
+  // rather than on everything at once.
+  float scale = effect == 2 ? 0.55 : 1.0;
+  return mix(col, vec3(0.024, 0.027, 0.043), a * scale);
+}
+
+/// What the glass refracts.
+///
+/// With a capture of the interface we sample that: the panel then bends the real
+/// tiles, text and rail underneath it, which is what makes it read as glass
+/// rather than as a filter over a photograph. Without one we fall back to
+/// composing the backdrop procedurally, which is correct but only ever shows the
+/// wallpaper.
+vec3 behind(vec2 uv, float lod) {
+  if (hasUi > 0.5) return textureLod(ui, clamp(uv, 0.0, 1.0), lod).rgb;
+  return scene(uv, lod);
+}
+
+float sdRoundBox(vec2 p, vec2 half_size, float r) {
+  vec2 q = abs(p) - half_size + r;
+  return min(max(q.x, q.y), 0.0) + length(max(q, vec2(0.0))) - r;
+}
+
+/// Opaque once we own the wallpaper; translucent while we do not, so the CSS
+/// wallpaper underneath still shows and a failed texture upload degrades to
+/// "fog over the picture" rather than to a black screen.
+float sceneAlpha() { return hasWallpaper > 0.5 ? 1.0 : 0.55; }
+
+void main() {
+  vec2 frag = gl_FragCoord.xy;
+  vec2 uv = frag / res;
+
+  // The backdrop layer never draws glass; the glass layer never draws anything
+  // else. Two passes, because the scrim has to darken the interface while the
+  // glass has to sit above the scrim — one layer cannot be on both sides of it.
+  // 纯净 has no glass either — the panels fall back to their own CSS backdrop.
+  if (glassAmount < 0.01 || glassOnly < 0.5 || effect == 0) {
+    if (glassOnly > 0.5) { outColor = vec4(0.0); return; }
+    outColor = vec4(scene(uv, 0.0), sceneAlpha());
+    return;
+  }
+
+  // Nearest surface wins. Panels do not overlap in practice, and when a menu sits
+  // on a panel the one whose edge is closer is the one whose bevel should bend
+  // the light.
+  vec2 center = vec2(0.0);
+  vec2 half_size = vec2(0.0);
+  float radius = 0.0;
+  float d = 1e9;
+  for (int i = 0; i < MAX_GLASS; i++) {
+    if (i >= glassCount) break;
+    vec2 c = glassRect[i].xy + glassRect[i].zw * 0.5;
+    vec2 h = glassRect[i].zw * 0.5;
+    float di = sdRoundBox(frag - c, h, glassRadius[i]);
+    if (di < d) { d = di; center = c; half_size = h; radius = glassRadius[i]; }
+  }
+
+  if (glassCount == 0) {
+    outColor = vec4(0.0);
+    return;
+  }
+
+  // Well outside: the panel's shadow, drawn here so the CSS box-shadow can go. A
+  // shader shadow follows the same rounded rectangle the glass does, so the two
+  // can never disagree about where the panel is.
+  float shadow = (1.0 - smoothstep(0.0, 30.0, max(d, 0.0))) * 0.42 * glassAmount;
+  if (d > 1.0) {
+    outColor = vec4(0.0, 0.0, 0.0, shadow);
+    return;
+  }
+
+  // Coverage across roughly one pixel rather than a hard test. A binary cutoff
+  // gave the rounded corners a staircase — the SDF knows the exact distance to
+  // the edge, so it can hand back a fraction instead.
+  float cover = 1.0 - smoothstep(-0.7, 0.7, d);
+
+  // Thickness profile: 0 at the rim, 1 well inside. This is what makes the slab
+  // read as having depth instead of being a flat cutout. The band has to be wide
+  // enough to see — at 26px the whole effect happened inside a hairline.
+  // Tighter than before: concentrating the bend near the edge reads as glass,
+  // spreading it wide reads as a water film.
+  const float RIM = 34.0;
+  float depth = smoothstep(0.0, -RIM, d);
+
+  // Surface normal from the gradient of the distance field.
+  vec2 e = vec2(1.0, 0.0);
+  vec2 n = normalize(vec2(
+    sdRoundBox(frag - center + e.xy, half_size, radius) - sdRoundBox(frag - center - e.xy, half_size, radius),
+    sdRoundBox(frag - center + e.yx, half_size, radius) - sdRoundBox(frag - center - e.yx, half_size, radius)
+  ) + 1e-6);
+
+  // Bending is strongest where the glass is thinnest, i.e. at the rim. Kept small
+  // on purpose: the design asks for no neon and borders at 8–20% white, so the
+  // refraction should be something you notice only when you look for it.
+  // A touch stronger than looks right on its own: the panel lays a 34px blur over
+  // this, which softens the displacement, so the bend has to survive it.
+  float bend = (1.0 - depth) * 46.0 * glassAmount;
+  vec2 offset = n * bend;
+
+  // A touch of dispersion: the channels bend by slightly different amounts.
+  // Frosted through the middle, clearer at the bevel — the refraction is only
+  // legible where the picture still has detail, and the text only readable where
+  // it does not.
+  float lod = mix(1.2, 5.0, depth);
+  vec3 col;
+  col.r = behind((frag + offset * 1.03) / res, lod).r;
+  col.g = behind((frag + offset) / res, lod).g;
+  col.b = behind((frag + offset * 0.97) / res, lod).b;
+
+  // The scrim's darkening applied here too, so the glass sits in the same light
+  // as everything around it rather than glowing out of a dimmed screen.
+  // Highlight dims nothing: the lift lives on the panel itself, so darkening the
+  // rest of the screen behind it would undo the point.
+  float scrim = effect == 2 ? 0.0 : dim;
+  col *= 1.0 - scrim * 0.45;
+
+  // Darkening ramps with depth: light at the rim, heavy through the middle.
+  //
+  // A flat 72% everywhere was why the refraction could not be seen — it crushed
+  // the bent wallpaper to near black exactly where the bending happens. Ramping
+  // it also puts the darkness where the text is, so legibility and the effect
+  // pull in the same direction instead of trading off.
+  // Ultra clear, iOS 27's "极清" end of the scale: the wallpaper reads straight
+  // through the panel and the depth comes entirely from the refraction. Only a
+  // gentle ramp toward the middle, where the text sits.
+  float darkness = hasUi > 0.5 ? mix(0.16, 0.54, depth) : mix(0.06, 0.26, depth);
+  col = mix(col, col * 0.30, darkness * glassAmount);
+
+  // The signature of Liquid Glass is a thin, crisp specular line right at the
+  // bevel — not a wide halo. Anything broad here reads as a second frame just
+  // outside the DOM's 1px border.
+  col += accent * pow(1.0 - depth, 3.0) * 0.10 * glassAmount;
+  col += vec3(1.0) * pow(1.0 - depth, 14.0) * 0.34 * glassAmount;
+
+  // The hairline border, from the same distance field. Drawn here rather than in
+  // CSS so it lands exactly on the glass edge — two systems each drawing their
+  // own border is what produced the doubled frame.
+  float line = 1.0 - smoothstep(0.0, 1.6, abs(d + 0.8));
+  col = mix(col, vec3(1.0), line * 0.20 * glassAmount);
+
+  // Fade the panel into its own shadow across that same pixel of coverage.
+  outColor = vec4(mix(vec3(0.0), col, cover), mix(shadow, 1.0, cover));
+  return;
+
+}`;
+
+function compile(gl: WebGL2RenderingContext, type: number, src: string): WebGLShader {
+  const shader = gl.createShader(type)!;
+  gl.shaderSource(shader, src);
+  gl.compileShader(shader);
+  if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+    throw new Error(gl.getShaderInfoLog(shader) ?? "shader compile failed");
+  }
+  return shader;
+}
+
+function rgbOf(hex: string): [number, number, number] {
+  const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex.trim());
+  if (!m) return [0.42, 0.46, 0.68];
+  return [parseInt(m[1]!, 16) / 255, parseInt(m[2]!, 16) / 255, parseInt(m[3]!, 16) / 255];
+}
+
+type Layer = {
+  canvas: HTMLCanvasElement;
+  gl: WebGL2RenderingContext;
+  program: WebGLProgram;
+  texture: WebGLTexture;
+  uiTexture: WebGLTexture;
+  u: Record<string, WebGLUniformLocation | null>;
+};
+
+/**
+ * One fullscreen quad running the shared shader.
+ *
+ * Two of these exist. The backdrop layer sits under the interface; the glass
+ * layer sits above the scrim so refraction is not buried under the dimming, and
+ * is fully transparent everywhere except inside the panel. A single layer cannot
+ * do both jobs, because the scrim has to be above one and below the other.
+ */
+function makeLayer(zIndex: number, glassOnly: boolean, after: Element): Layer | null {
+  const canvas = document.createElement("canvas");
+  canvas.style.cssText =
+    `position:absolute;inset:0;z-index:${zIndex};pointer-events:none;width:100%;height:100%`;
+  after.after(canvas);
+
+  const gl = canvas.getContext("webgl2", {
+    antialias: false,
+    alpha: true,
+    // The backdrop layer sits inside the element the glass captures. A drawing
+    // buffer that has already been swapped away reads back empty, which would
+    // leave the glass refracting the interface over a black void.
+    preserveDrawingBuffer: !glassOnly,
+  });
+  if (!gl) {
+    canvas.remove();
+    return null;
+  }
+
+  let program: WebGLProgram;
+  try {
+    program = gl.createProgram()!;
+    gl.attachShader(program, compile(gl, gl.VERTEX_SHADER, VERT));
+    gl.attachShader(program, compile(gl, gl.FRAGMENT_SHADER, FRAG));
+    gl.linkProgram(program);
+    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+      throw new Error(gl.getProgramInfoLog(program) ?? "link failed");
+    }
+  } catch (err) {
+    console.error("场景着色器失败", err);
+    canvas.remove();
+    return null;
+  }
+
+  gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+  const posLoc = gl.getAttribLocation(program, "pos");
+  gl.enableVertexAttribArray(posLoc);
+  gl.vertexAttribPointer(posLoc, 2, gl.FLOAT, false, 0, 0);
+
+  gl.useProgram(program);
+  const names = [
+    "res", "time", "accent", "wallpaper", "hasWallpaper", "wallAspect",
+    "glassRect[0]", "glassRadius[0]", "glassCount", "glassAmount", "veil", "dim", "glassOnly", "effect", "ui", "hasUi",
+  ];
+  const u: Record<string, WebGLUniformLocation | null> = {};
+  for (const n of names) u[n] = gl.getUniformLocation(program, n);
+
+  const texture = gl.createTexture()!;
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, texture);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+
+  gl.uniform1i(u.wallpaper!, 0);
+  gl.uniform3f(u.accent!, 0.42, 0.46, 0.68);
+  gl.uniform1f(u.hasWallpaper!, 0);
+  gl.uniform1f(u.wallAspect!, 1.6);
+  gl.uniform1f(u.glassAmount!, 0);
+  gl.uniform1i(u.glassCount!, 0);
+  gl.uniform1f(u.dim!, 0);
+  gl.uniform3f(u.veil!, 0.5, 0.28, 0.56);
+  gl.uniform1f(u.glassOnly!, glassOnly ? 1 : 0);
+  gl.uniform1i(u.effect!, 2);
+  gl.uniform1i(u.ui!, 1);
+  gl.uniform1f(u.hasUi!, 0);
+  gl.enable(gl.BLEND);
+  gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+
+  const uiTexture = gl.createTexture()!;
+  gl.activeTexture(gl.TEXTURE1);
+  gl.bindTexture(gl.TEXTURE_2D, uiTexture);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.activeTexture(gl.TEXTURE0);
+
+  return { canvas, gl, program, texture, uiTexture, u };
+}
+
+export type Scene = {
+  setAccent(hex: string): void;
+  setWallpaper(url: string): void;
+  /** Pass an empty list to dissolve the glass. CSS pixels, y from the top. */
+  setGlass(rects: GlassRect[]): void;
+  setVeil(brightness: number): void;
+  setEffect(name: EffectName): void;
+  /** Any interaction with our own interface proves somebody is looking. */
+  wake(): void;
+};
+
+/**
+ * Returns null when WebGL is unavailable, leaving the CSS layers in place.
+ *
+ * `watchOcclusion` belongs to the desktop surface only. The launchpad is hidden
+ * whenever it is not in use, and a hidden window is not painted, so its loop
+ * stops on its own — asking the shell about the *desktop's* occlusion would give
+ * it the wrong answer anyway.
+ */
+export function startBackground(watchOcclusion: boolean): Scene | null {
+  const wall = document.getElementById("wall");
+  const scrim = document.getElementById("scrim");
+  if (!wall || !scrim) return null;
+
+  const backdrop = makeLayer(1, false, wall);
+  if (!backdrop) return null;
+  // Above the scrim (z 20), below the panels (z 21).
+  const glass = makeLayer(20, true, scrim);
+  if (!glass) {
+    backdrop.canvas.remove();
+    return null;
+  }
+  // A non-null alias: narrowing from the guards above does not survive into the
+  // closures below.
+  const glassLayer: Layer = glass;
+  const layers = [backdrop, glassLayer];
+
+  // The shader draws the atmosphere now, so the CSS blooms and veil step aside.
+  // The scrim keeps painting — it dims the interface, which no shader can reach.
+  for (const id of ["bloomA", "bloomB", "veil"]) {
+    document.getElementById(id)?.style.setProperty("display", "none");
+  }
+
+  let hidden = false;
+  let running = false;
+  let target: GlassRect[] = [];
+  let amount = 0;
+
+  // Capturing the interface is a full repaint into a texture, so it only runs
+  // while a panel is actually open, and at a limited rate — the result is read
+  // through a frosted lens, where a stale frame or two is invisible.
+  const world = document.getElementById("world");
+  const capture: Capture | null = world ? createCapture(world, 0.5) : null;
+  const CAPTURE_INTERVAL = 1000 / 30;
+  let lastCapture = -1e9;
+
+  function refreshUi(now: number): void {
+    if (!capture) return;
+    if (now - lastCapture < CAPTURE_INTERVAL) return;
+    lastCapture = now;
+
+    const { gl, u } = glassLayer;
+    if (!capture.grab()) {
+      // Falls back to the procedural backdrop rather than freezing on whatever
+      // was captured last.
+      gl.useProgram(glassLayer.program);
+      gl.uniform1f(u.hasUi!, 0);
+      return;
+    }
+
+    gl.useProgram(glassLayer.program);
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, glassLayer.uiTexture);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, capture.canvas);
+    // The mip chain is what frosts the middle of the panel.
+    gl.generateMipmap(gl.TEXTURE_2D);
+    gl.uniform1f(u.hasUi!, 1);
+    gl.activeTexture(gl.TEXTURE0);
+  }
+
+  function forEach(fn: (l: Layer) => void): void {
+    for (const layer of layers) {
+      layer.gl.useProgram(layer.program);
+      fn(layer);
+    }
+  }
+
+  function draw(now: number): void {
+    if (hidden) {
+      running = false;
+      return;
+    }
+
+    const want = target.length > 0 ? 1 : 0;
+    // Quick: the panel it belongs to fades in over 200ms, and glass arriving
+    // later than its own panel reads as lag.
+    amount += (want - amount) * 0.34;
+    if (Math.abs(want - amount) < 0.005) amount = want;
+
+    // Only while there is glass to draw, and only once the panel rectangles are
+    // known — a capture with no panel on screen would be pure waste.
+    if (target.length > 0 && amount > 0.01) refreshUi(now);
+
+    for (const layer of layers) {
+      const { canvas, gl, u } = layer;
+      const isGlass = layer === glassLayer;
+      // Fog alone is soft enough for half resolution; refraction is not — it
+      // bends a photograph and the seams show.
+      // The glass layer runs at device pixels: it draws hairlines and rounded
+      // corners, and rendering those in CSS pixels then letting the browser
+      // upscale is its own source of stepped edges. Capped at 2 so a 4K ultrawide
+      // does not quadruple the fragment count for nothing.
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      const scale = isGlass ? dpr : amount > 0.01 ? 1 : 0.5;
+      const w = Math.max(1, Math.round(canvas.clientWidth * scale));
+      const h = Math.max(1, Math.round(canvas.clientHeight * scale));
+      if (canvas.width !== w || canvas.height !== h) {
+        canvas.width = w;
+        canvas.height = h;
+        gl.viewport(0, 0, w, h);
+      }
+
+      gl.useProgram(layer.program);
+      if (isGlass) {
+        // Two units, rebound per frame: a shared context is easy to leave
+        // pointing at the wrong texture after an upload.
+        gl.activeTexture(gl.TEXTURE1);
+        gl.bindTexture(gl.TEXTURE_2D, layer.uiTexture);
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, layer.texture);
+      }
+      if (target.length > 0) {
+        // CSS pixels count y from the top; gl_FragCoord counts from the bottom.
+        const rects: number[] = [];
+        const radii: number[] = [];
+        for (const r of target.slice(0, 6)) {
+          rects.push(
+            r.x * scale,
+            (canvas.clientHeight - r.y - r.height) * scale,
+            r.width * scale,
+            r.height * scale,
+          );
+          radii.push(r.radius * scale);
+        }
+        gl.uniform4fv(u["glassRect[0]"]!, rects);
+        gl.uniform1fv(u["glassRadius[0]"]!, radii);
+        gl.uniform1i(u.glassCount!, radii.length);
+      }
+      gl.uniform1f(u.glassAmount!, amount);
+      gl.uniform1f(u.dim!, amount);
+      gl.uniform2f(u.res!, w, h);
+      gl.uniform1f(u.time!, now / 1000);
+      gl.clearColor(0, 0, 0, 0);
+      gl.clear(gl.COLOR_BUFFER_BIT);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+    }
+    requestAnimationFrame(draw);
+  }
+
+  function resume(): void {
+    if (running || hidden) return;
+    running = true;
+    requestAnimationFrame(draw);
+  }
+  resume();
+
+  if (watchOcclusion) {
+    setInterval(() => {
+      // A panel of ours being open settles the question without asking: the user
+      // is interacting with it, so somebody is looking. Consulting the shell here
+      // was leaving the desktop surface paused with a panel open on top of it,
+      // and the glass never appeared.
+      if (target.length > 0) {
+        if (hidden) {
+          hidden = false;
+          resume();
+        }
+        return;
+      }
+      void invoke<Occlusion>("desktop_occluded").then((probe) => {
+        hidden = probe.occluded;
+        if (!probe.occluded) resume();
+      });
+    }, 1000);
+  }
+
+  return {
+    setAccent(hex: string): void {
+      const [r, g, b] = rgbOf(hex);
+      forEach((l) => l.gl.uniform3f(l.u.accent!, r, g, b));
+    },
+    setVeil(brightness: number): void {
+      // Bright wallpapers need more help before white text holds up. Darker top
+      // and bottom than through the middle, which reads as depth rather than as
+      // a grey sheet laid over the picture.
+      const d = Math.min(0.66, Math.max(0.26, 0.2 + brightness * 0.52));
+      forEach((l) =>
+        l.gl.uniform3f(l.u.veil!, d + 0.2, Math.max(d - 0.06, 0.04), d + 0.14),
+      );
+    },
+    setWallpaper(url: string): void {
+      const img = new Image();
+      // The asset protocol is a different origin from the page. An image can be
+      // displayed cross-origin, but uploading one into WebGL taints the texture
+      // and throws unless it was fetched with CORS.
+      img.crossOrigin = "anonymous";
+      img.onload = () => {
+        for (const layer of layers) {
+          const { gl, u } = layer;
+          try {
+            gl.useProgram(layer.program);
+            gl.activeTexture(gl.TEXTURE0);
+            gl.bindTexture(gl.TEXTURE_2D, layer.texture);
+            gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img);
+            // The mip chain is the blur. WebGL2 builds them for any size.
+            gl.generateMipmap(gl.TEXTURE_2D);
+            gl.uniform1f(u.wallAspect!, img.width / Math.max(img.height, 1));
+            gl.uniform1f(u.hasWallpaper!, 1);
+          } catch (err) {
+            // Leaves hasWallpaper at 0, which keeps the backdrop translucent so
+            // the CSS wallpaper still shows. Says so rather than going black.
+            console.error("壁纸纹理上传失败，玻璃只会折射雾", err);
+          }
+        }
+        resume();
+      };
+      img.onerror = () => console.error("壁纸纹理加载失败", url);
+      img.src = url;
+    },
+    setEffect(name: EffectName): void {
+      const code = name === "none" ? 0 : name === "highlight" ? 2 : 1;
+      forEach((l) => l.gl.uniform1i(l.u.effect!, code));
+      hidden = false;
+      resume();
+    },
+    wake(): void {
+      hidden = false;
+      resume();
+    },
+    setGlass(rects: GlassRect[]): void {
+      target = rects;
+      // A panel being open is proof the surface is being looked at, whatever a
+      // stale occlusion probe still says.
+      if (rects.length > 0) hidden = false;
+      resume();
+    },
+  };
+}

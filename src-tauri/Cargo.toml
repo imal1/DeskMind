@@ -1,0 +1,36 @@
+[package]
+name = "deskmind"
+version = "0.1.0"
+description = "AI 把启动项分好组的 Windows 启动台"
+edition = "2021"
+rust-version = "1.77"
+
+[lib]
+name = "deskmind_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["protocol-asset", "tray-icon"] }
+tauri-plugin-global-shortcut = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+dirs = "5"
+opener = "0.7"
+systemicons = "0.9"
+base64 = "0.22"
+lnk = "0.6"
+encoding_rs = "0.8"
+# rustls rather than native-tls: no OpenSSL to find at build time on Windows.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+winreg = "0.52"
+# The platform store is behind a feature; without it keyring silently uses an
+# in-memory mock and the key would vanish on restart.
+keyring = { version = "3", features = ["windows-native"] }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "bmp"] }
+
+[profile.release]
+strip = true
+lto = true

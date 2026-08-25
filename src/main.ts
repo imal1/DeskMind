@@ -1,0 +1,1243 @@
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+import { rank } from "./match";
+import { startBackground, type EffectName, type Scene } from "./background";
+
+type LaunchTarget = {
+  name: string;
+  path: string;
+  source: "startmenu" | "desktop";
+};
+
+type StoredZone = { name: string; items: string[] };
+type Zones = { zones: StoredZone[]; pinned: string[] };
+
+const win = getCurrentWindow();
+
+/**
+ * The same page renders both surfaces (ADR 0015). The desktop one is parented
+ * into the desktop layer and must never hide — hiding it would leave the user
+ * without a desktop. The launchpad one is a normal window summoned by hotkey.
+ */
+const isDesktop = win.label === "desktop";
+
+/** Hides the launchpad. On the desktop surface there is nothing to hide. */
+async function dismiss(): Promise<void> {
+  if (!isDesktop) await win.hide();
+}
+
+const el = <T extends HTMLElement>(id: string): T =>
+  document.getElementById(id) as T;
+
+const tabsEl = el("tabs");
+const railEl = el("rail");
+const railTitleEl = el("railtitle");
+const railMetaEl = el("railmeta");
+const summaryEl = el("summary");
+const clockEl = el("clock");
+const scrimEl = el("scrim");
+const searchEl = el("search");
+const resultsEl = el("results");
+const queryEl = el<HTMLInputElement>("q");
+const heroEl = el("hero");
+const heroIcoEl = el("heroico");
+const heroMetaEl = el("herometa");
+const heroTitleEl = el("herotitle");
+const heroPathEl = el("heropath");
+const ctxEl = el("ctx");
+const tidyBtn = el<HTMLButtonElement>("tidybtn");
+const toastEl = el("toast");
+const toastTitleEl = el("toasttitle");
+const toastSubEl = el("toastsub");
+const toastActEl = el<HTMLButtonElement>("toastact");
+
+let all: LaunchTarget[] = [];
+let iconOf = new Map<string, string>();
+/** Persisted zones. Tab 0 is always a synthetic "全部" and is not stored. */
+let stored: StoredZone[] = [];
+/** Paths the user pinned. They sort to the front of whichever zone they are in. */
+let pinned = new Set<string>();
+/** The zone set as it was before the last tidy, for undo. */
+let previous: Zones | null = null;
+let zone = 0;
+let tile = 0;
+
+let searchOpen = false;
+let results: LaunchTarget[] = [];
+let pick = 0;
+
+const MAX_RESULTS = 200;
+
+function tabNames(): string[] {
+  return ["全部", ...stored.map((z) => z.name)];
+}
+
+function inZone(): LaunchTarget[] {
+  const base =
+    zone === 0
+      ? all
+      : (() => {
+          const members = new Set(stored[zone - 1]?.items ?? []);
+          return all.filter((t) => members.has(t.path));
+        })();
+
+  // Pinned first, otherwise the order the backend produced. A stable partition
+  // rather than a sort, so unpinned items keep their alphabetical run.
+  if (pinned.size === 0) return base;
+  return [
+    ...base.filter((t) => pinned.has(t.path)),
+    ...base.filter((t) => !pinned.has(t.path)),
+  ];
+}
+
+/**
+ * Paints a target's icon onto `node`, falling back to its initial. Extraction
+ * genuinely fails for some entries — Store shortcuts, broken links — and a bare
+ * plate reads as a rendering bug rather than as missing data.
+ */
+function iconStyle(node: HTMLElement, target: LaunchTarget): void {
+  const url = iconOf.get(target.path);
+  node.style.backgroundImage = url ? `url("${url}")` : "";
+  node.textContent = url ? "" : [...target.name][0]?.toUpperCase() ?? "?";
+}
+
+/** Everything we can say about a target without opening it. */
+function kindOf(t: LaunchTarget): string {
+  const dot = t.name.lastIndexOf(".");
+  const ext = t.path.slice(t.path.lastIndexOf(".") + 1).toLowerCase();
+  if (ext === "lnk") return "程序";
+  if (ext === "url") return "网页快捷方式";
+  if (dot > 0 || t.path.includes(".")) return `${ext.toUpperCase()} 文件`;
+  return "文件夹";
+}
+
+function selected(): LaunchTarget | undefined {
+  return inZone()[tile];
+}
+
+// ---------- detail panel ----------
+
+function paintHero(): void {
+  const t = selected();
+  if (!t) {
+    heroEl.classList.add("hide");
+    return;
+  }
+  heroEl.classList.remove("hide");
+  iconStyle(heroIcoEl, t);
+  heroMetaEl.textContent = [
+    pinned.has(t.path) ? "已固定" : null,
+    zoneOf(t),
+    t.source === "desktop" ? "桌面" : "开始菜单",
+    kindOf(t),
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  heroTitleEl.textContent = t.name;
+  heroPathEl.textContent = t.path;
+}
+
+// ---------- context menu ----------
+
+function closeCtx(): void {
+  ctxEl.classList.add("hide");
+  refreshGlass();
+}
+
+function openCtx(t: LaunchTarget, x: number, y: number): void {
+  const head = document.createElement("div");
+  head.id = "ctxhead";
+  head.textContent = t.name;
+
+  const item = (label: string, act: () => void): HTMLButtonElement => {
+    const b = document.createElement("button");
+    b.className = "ctxitem";
+    b.textContent = label;
+    b.addEventListener("click", () => {
+      closeCtx();
+      act();
+    });
+    return b;
+  };
+
+  // No 打开 here: the detail panel has a button for it and a tile opens on
+  // double-click, so a third way would just be noise.
+  const nodes: HTMLElement[] = [
+    head,
+    item(pinned.has(t.path) ? "取消固定" : "固定", () => togglePin(t)),
+    item("打开所在文件夹", () => void revealIn(t)),
+    item("复制路径", () => void copyPath(t)),
+  ];
+
+  // Listed flat rather than behind a submenu: with a handful of zones the extra
+  // rows cost less than a hover-to-open nested menu would.
+  const current = zoneOf(t);
+  const elsewhere = stored.filter((z) => z.name !== current);
+  if (elsewhere.length > 0) {
+    const sep = document.createElement("div");
+    sep.className = "ctxsep";
+    nodes.push(sep);
+    for (const z of elsewhere) {
+      nodes.push(item(`移到「${z.name}」`, () => moveTo(t, z.name)));
+    }
+  }
+
+  ctxEl.replaceChildren(...nodes);
+
+  // Show first so the measured size is real, then nudge back inside the viewport.
+  ctxEl.classList.remove("hide");
+  const box = ctxEl.getBoundingClientRect();
+  ctxEl.style.left = `${Math.min(x, window.innerWidth - box.width - 12)}px`;
+  ctxEl.style.top = `${Math.min(y, window.innerHeight - box.height - 12)}px`;
+  refreshGlass();
+}
+
+// ---------- rail ----------
+
+function paintTabs(): void {
+  const names = tabNames();
+  zone = Math.min(zone, names.length - 1);
+  tabsEl.replaceChildren(
+    ...names.map((name, i) => {
+      const b = document.createElement("button");
+      b.className = i === zone ? "tab on" : "tab";
+      b.textContent = name;
+      b.addEventListener("click", () => {
+        zone = i;
+        tile = 0;
+        paint();
+      });
+
+      // Tabs are drop targets for tiles. Dropping on 全部 (index 0) means "no
+      // zone" rather than "every zone", which is the only sensible reading and
+      // gives the user a way to undo a placement without opening settings.
+      b.addEventListener("dragover", (e) => {
+        e.preventDefault();
+        b.classList.add("dropping");
+      });
+      b.addEventListener("dragleave", () => b.classList.remove("dropping"));
+      b.addEventListener("drop", (e) => {
+        e.preventDefault();
+        b.classList.remove("dropping");
+        const path = e.dataTransfer?.getData("application/x-deskmind-target");
+        const target = all.find((t) => t.path === path);
+        if (target) moveTo(target, i === 0 ? null : (names[i] ?? null));
+      });
+      return b;
+    }),
+  );
+}
+
+function paintRail(): void {
+  const items = inZone();
+  railTitleEl.textContent = tabNames()[zone] ?? "全部";
+  railMetaEl.textContent = `${items.length} 个启动项`;
+  summaryEl.textContent = `共 ${all.length} 项 · 图标 ${iconOf.size}`;
+
+  if (items.length === 0) {
+    const empty = document.createElement("div");
+    empty.id = "railempty";
+    empty.textContent =
+      stored.length === 0 ? "还没有分区，点右上角「整理」让 AI 提一套" : "这个分区还是空的";
+    railEl.replaceChildren(empty);
+    paintHero();
+    return;
+  }
+
+  tile = Math.min(tile, items.length - 1);
+
+  railEl.replaceChildren(
+    ...items.map((t, i) => {
+      const node = document.createElement("div");
+      node.className = i === tile ? "tile on" : "tile";
+      node.title = t.path;
+      node.addEventListener("click", () => {
+        tile = i;
+        paintRail();
+      });
+      node.addEventListener("dblclick", () => void run(t));
+      node.addEventListener("contextmenu", (e) => {
+        e.preventDefault();
+        tile = i;
+        paintRail();
+        openCtx(t, e.clientX, e.clientY);
+      });
+
+      // ponytail: tiles can be dragged onto zone tabs, but files dragged in from
+      // Explorer are not accepted at all — and because the desktop surface covers
+      // the real icons, Windows will not pass that drop through to the desktop
+      // underneath. So dropping a file "on the desktop" silently fails, which is
+      // a capability ADR 0015 knowingly took away. Deciding what a drop should do
+      // is a product question, not a technical one: copy to the Desktop folder
+      // (safe, but leaves duplicates), reproduce Windows' move-or-copy semantics
+      // (expected, but deletes originals and wants IFileOperation for conflicts
+      // and undo), or add the file as a launch target and touch no files at all
+      // (coherent with ADR 0004, but does not put anything on the desktop).
+      // Deferred until real use shows whether the gap is actually felt.
+      //
+      // A private MIME type, so a tile dragged out of the window is not mistaken
+      // for text by whatever it lands on.
+      node.draggable = true;
+      node.addEventListener("dragstart", (e) => {
+        e.dataTransfer?.setData("application/x-deskmind-target", t.path);
+        node.classList.add("dragging");
+      });
+      node.addEventListener("dragend", () => node.classList.remove("dragging"));
+
+      const ico = document.createElement("div");
+      ico.className = "tileico";
+      iconStyle(ico, t);
+
+      const name = document.createElement("div");
+      name.className = "tilename";
+      name.textContent = t.name;
+
+      node.append(ico, name);
+      if (pinned.has(t.path)) {
+        const dot = document.createElement("div");
+        dot.className = "tilepin";
+        node.append(dot);
+      }
+      return node;
+    }),
+  );
+
+  railEl.children[tile]?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  paintHero();
+}
+
+function paint(): void {
+  paintTabs();
+  paintRail();
+}
+
+// ---------- search overlay ----------
+
+function paintResults(): void {
+  results = rank(all, queryEl.value.trim(), (t) => t.name).slice(0, MAX_RESULTS);
+  pick = Math.min(pick, Math.max(0, results.length - 1));
+
+  if (results.length === 0) {
+    const none = document.createElement("div");
+    none.id = "nores";
+    none.textContent = "没有匹配的启动项";
+    resultsEl.replaceChildren(none);
+    return;
+  }
+
+  resultsEl.replaceChildren(
+    ...results.map((t, i) => {
+      const row = document.createElement("div");
+      row.className = i === pick ? "res on" : "res";
+      row.title = t.path;
+      row.addEventListener("mouseenter", () => {
+        pick = i;
+        paintResults();
+      });
+      row.addEventListener("click", () => void run(t));
+
+      const ico = document.createElement("div");
+      ico.className = "resico";
+      iconStyle(ico, t);
+
+      const name = document.createElement("span");
+      name.className = "resname";
+      name.textContent = t.name;
+
+      const src = document.createElement("span");
+      src.className = "ressrc";
+      src.textContent = t.source === "desktop" ? "桌面" : "";
+
+      row.append(ico, name, src);
+      return row;
+    }),
+  );
+
+  resultsEl.children[pick]?.scrollIntoView({ block: "nearest" });
+}
+
+// ---------- settings overlay ----------
+
+type Settings = {
+  /** Whether a key is stored. The key itself never leaves the backend. */
+  hasKey: boolean;
+  model: string;
+  baseUrl: string;
+  effect: EffectName;
+  autostart: boolean;
+};
+
+const effectEl = el("seteffect");
+/** Held while the panel is open, applied live so the choice can be seen. */
+let effect: EffectName = "highlight";
+
+function paintEffect(): void {
+  for (const b of effectEl.querySelectorAll<HTMLButtonElement>("button")) {
+    b.classList.toggle("on", b.dataset.effect === effect);
+  }
+}
+
+/**
+ * One place that applies a treatment everywhere: the shader, the chrome, and any
+ * panel already on screen. The rail and the top controls are styled from CSS off
+ * this attribute — they are DOM, not part of the scene the shader draws.
+ */
+function applyEffect(name: EffectName): void {
+  effect = name;
+  document.body.dataset.effect = name;
+  paintEffect();
+  background?.setEffect(name);
+  refreshGlass();
+}
+
+const settingsEl = el("settings");
+const keyEl = el<HTMLInputElement>("setkey");
+const modelEl = el<HTMLInputElement>("setmodel");
+const urlEl = el<HTMLInputElement>("seturl");
+const autoEl = el("setauto");
+const setMsgEl = el("setmsg");
+const setZonesEl = el("setzones");
+
+let settingsOpen = false;
+
+function settingsShowing(): boolean {
+  return settingsOpen;
+}
+
+/**
+ * Writes the zone set through and repaints. Every committed zone change goes
+ * through here so disk, tab strip and rail can never disagree.
+ *
+ * Edits made in the settings panel do not call this directly — they mutate a
+ * draft, and 保存 commits it. See `draft`.
+ */
+async function commitZones(next: StoredZone[]): Promise<void> {
+  stored = next;
+  try {
+    await invoke("write_zones", { value: { zones: stored, pinned: [...pinned] } });
+  } catch (err) {
+    setMsgEl.textContent = String(err);
+  }
+  tile = 0;
+  paint();
+  // The settings rows render the draft, not `stored`, so they are only redrawn
+  // when that panel actually owns a draft. The first-run review renders the live
+  // set and does need redrawing.
+  if (settingsOpen) paintZoneRows();
+  if (firstOpen && step === 2) paintFirst();
+}
+
+/**
+ * The settings panel's working copy. Zone edits land here and only reach disk on
+ * 保存, matching how the key/model fields in the same panel behave — the panel
+ * used to apply zone changes instantly while everything else waited for a button,
+ * which is two contradictory models in one place.
+ */
+let draft: StoredZone[] = [];
+
+function paintZoneRows(): void {
+  setZonesEl.replaceChildren(
+    ...zoneRowNodes(draft, (next) => {
+      draft = next;
+      paintZoneRows();
+    }),
+  );
+}
+
+/**
+ * Editable zone rows over an arbitrary list. The settings panel passes its draft;
+ * the first-run review passes the live set, because that screen has no 保存 of its
+ * own — advancing past it is the commit.
+ */
+function zoneRowNodes(
+  list: StoredZone[],
+  onChange: (next: StoredZone[]) => void,
+): HTMLElement[] {
+  if (list.length === 0) {
+    const none = document.createElement("div");
+    none.className = "fhint";
+    none.textContent = "还没有分区。点「整理」让 AI 提一套，或者自己新建。";
+    return [none];
+  }
+
+  return list.map((z, i) => {
+    const row = document.createElement("div");
+    row.className = "zrow";
+    row.draggable = true;
+
+    row.addEventListener("dragstart", (e) => {
+      e.dataTransfer?.setData("text/plain", String(i));
+      row.classList.add("dragging");
+    });
+    row.addEventListener("dragend", () => row.classList.remove("dragging"));
+    row.addEventListener("dragover", (e) => e.preventDefault());
+    row.addEventListener("drop", (e) => {
+      e.preventDefault();
+      const from = Number(e.dataTransfer?.getData("text/plain"));
+      if (Number.isNaN(from) || from === i) return;
+      const next = [...list];
+      const [moved] = next.splice(from, 1);
+      if (moved) next.splice(i, 0, moved);
+      onChange(next);
+    });
+
+    const grip = document.createElement("span");
+    grip.className = "zgrip";
+    grip.textContent = "⠿";
+
+    const name = document.createElement("input");
+    name.className = "zname";
+    name.value = z.name;
+    const rename = () => {
+      const value = name.value.trim();
+      // An empty name would produce an unclickable tab, so refuse it by putting
+      // the old one back rather than reporting an error.
+      if (!value || value === z.name) {
+        name.value = z.name;
+        return;
+      }
+      onChange(list.map((other, j) => (j === i ? { ...other, name: value } : other)));
+    };
+    name.addEventListener("blur", rename);
+    name.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") name.blur();
+      if (e.key === "Escape") {
+        name.value = z.name;
+        name.blur();
+      }
+      e.stopPropagation();
+    });
+
+    const count = document.createElement("span");
+    count.className = "zcount";
+    count.textContent = `${z.items.length} 项`;
+
+    const del = document.createElement("button");
+    del.className = "zdel";
+    del.textContent = "删除";
+    del.addEventListener("click", () => onChange(list.filter((_, j) => j !== i)));
+
+    row.append(grip, name, count, del);
+    return row;
+  });
+}
+
+function addZone(): void {
+  const base = "新分区";
+  let name = base;
+  let n = 2;
+  while (draft.some((z) => z.name === name)) name = `${base}${n++}`;
+  draft = [...draft, { name, items: [] }];
+  paintZoneRows();
+}
+
+/**
+ * Moves one target into a zone, removing it from wherever it was. A `null` zone
+ * takes it out of every zone, leaving it visible only under 全部.
+ */
+function moveTo(target: LaunchTarget, zoneName: string | null): void {
+  void commitZones(
+    stored.map((z) => ({
+      name: z.name,
+      items:
+        z.name === zoneName
+          ? [...z.items.filter((p) => p !== target.path), target.path].sort()
+          : z.items.filter((p) => p !== target.path),
+    })),
+  );
+}
+
+function zoneOf(target: LaunchTarget): string | null {
+  return stored.find((z) => z.items.includes(target.path))?.name ?? null;
+}
+
+function togglePin(target: LaunchTarget): void {
+  if (pinned.has(target.path)) pinned.delete(target.path);
+  else pinned.add(target.path);
+  // Pins live in the same document as the zones, so this writes both.
+  void commitZones(stored);
+}
+
+async function openSettings(): Promise<void> {
+  const s = await invoke<Settings>("read_settings");
+  // The backend only reports whether a key exists. An empty field means "leave it
+  // alone", so the placeholder is the only thing that reveals the state.
+  keyEl.value = "";
+  keyEl.placeholder = s.hasKey ? "已存入凭据管理器，留空则不修改" : "粘贴 API key";
+  modelEl.value = s.model;
+  urlEl.value = s.baseUrl;
+  autoEl.classList.toggle("on", s.autostart);
+  applyEffect(s.effect);
+  setMsgEl.textContent = "";
+  // Opening a panel of ours is proof somebody is looking, so the scene must not
+  // stay parked waiting for the next occlusion poll — that was the several
+  // seconds of lag before a change showed up.
+  background?.wake();
+  // Deep copy, so discarding really discards.
+  draft = stored.map((z) => ({ name: z.name, items: [...z.items] }));
+  paintZoneRows();
+
+  settingsOpen = true;
+  scrimEl.classList.remove("hide");
+  settingsEl.classList.remove("hide");
+  (s.hasKey ? modelEl : keyEl).focus();
+  refreshGlass();
+}
+
+/** Closing without saving throws the draft away — that is what makes it a draft. */
+function closeSettings(): void {
+  settingsOpen = false;
+  draft = [];
+  settingsEl.classList.add("hide");
+  scrimEl.classList.add("hide");
+  refreshGlass();
+}
+
+async function saveSettings(): Promise<void> {
+  try {
+    await invoke("write_settings", {
+      apiKey: keyEl.value,
+      model: modelEl.value,
+      baseUrl: urlEl.value,
+      effect,
+      autostartOn: autoEl.classList.contains("on"),
+    });
+    await commitZones(draft);
+    closeSettings();
+    toast("设置已保存");
+  } catch (err) {
+    setMsgEl.textContent = String(err);
+  }
+}
+
+function openSearch(seed = ""): void {
+  searchOpen = true;
+  queryEl.value = seed;
+  pick = 0;
+  scrimEl.classList.remove("hide");
+  searchEl.classList.remove("hide");
+  paintResults();
+  queryEl.focus();
+  // Straight away: panels fade in without moving, so the rectangle is already
+  // its resting position on the first frame.
+  refreshGlass();
+}
+
+function closeSearch(): void {
+  searchOpen = false;
+  scrimEl.classList.add("hide");
+  searchEl.classList.add("hide");
+  refreshGlass();
+}
+
+// ---------- actions ----------
+
+async function revealIn(target: LaunchTarget): Promise<void> {
+  await dismiss();
+  try {
+    await invoke("reveal", { path: target.path });
+  } catch (err) {
+    console.error("打开所在文件夹失败", target.path, err);
+  }
+}
+
+async function copyPath(target: LaunchTarget): Promise<void> {
+  try {
+    await navigator.clipboard.writeText(target.path);
+  } catch (err) {
+    console.error("复制路径失败", err);
+  }
+}
+
+async function run(target: LaunchTarget): Promise<void> {
+  // Get out of the way first so the launched app is never stuck behind us. On the
+  // desktop surface there is nothing to get out of the way — the app opens on top
+  // of us the way it would over any desktop.
+  await dismiss();
+  try {
+    await invoke("launch", { path: target.path });
+  } catch (err) {
+    console.error("启动失败", target.path, err);
+  }
+}
+
+function moveTile(delta: number): void {
+  const items = inZone();
+  if (items.length === 0) return;
+  tile = (tile + delta + items.length) % items.length;
+  paintRail();
+}
+
+function moveZone(delta: number): void {
+  const count = tabNames().length;
+  zone = (zone + delta + count) % count;
+  tile = 0;
+  paint();
+}
+
+// ---------- toast ----------
+
+let toastTimer = 0;
+
+function toast(
+  title: string,
+  sub = "",
+  action?: { label: string; act: () => void },
+): void {
+  toastTitleEl.textContent = title;
+  toastSubEl.textContent = sub;
+  if (action) {
+    toastActEl.textContent = action.label;
+    toastActEl.classList.remove("hide");
+    toastActEl.onclick = () => {
+      hideToast();
+      action.act();
+    };
+  } else {
+    toastActEl.classList.add("hide");
+    toastActEl.onclick = null;
+  }
+  toastEl.classList.remove("hide");
+
+  window.clearTimeout(toastTimer);
+  // Undo needs long enough to notice and reach; plain confirmations do not.
+  toastTimer = window.setTimeout(hideToast, action ? 9000 : 4000);
+}
+
+function hideToast(): void {
+  toastEl.classList.add("hide");
+}
+
+// ---------- tidy ----------
+
+async function loadZones(): Promise<void> {
+  const value = await invoke<Zones>("read_zones");
+  stored = value.zones;
+  pinned = new Set(value.pinned ?? []);
+}
+
+async function undoTidy(): Promise<void> {
+  if (!previous) return;
+  const restore = previous;
+  previous = null;
+  try {
+    await invoke("write_zones", { value: restore });
+    stored = restore.zones;
+    pinned = new Set(restore.pinned);
+    tile = 0;
+    paint();
+    toast("已恢复整理前的分区");
+  } catch (err) {
+    toast("撤销失败", String(err));
+  }
+}
+
+async function doTidy(): Promise<void> {
+  const check = await invoke<{ ready: boolean; configPath: string }>("status");
+  if (!check.ready) {
+    toast("还没有填 API key", "在设置里填一次就好", {
+      label: "打开设置",
+      act: () => void openSettings(),
+    });
+    return;
+  }
+
+  const first = stored.length === 0;
+  previous = {
+    zones: stored.map((z) => ({ name: z.name, items: [...z.items] })),
+    pinned: [...pinned],
+  };
+
+  tidyBtn.disabled = true;
+  tidyBtn.textContent = "整理中…";
+  toast(first ? "正在读桌面，判断该分成哪些区" : "正在整理");
+
+  try {
+    const result = await invoke<Zones>("run_tidy");
+    stored = result.zones;
+    pinned = new Set(result.pinned ?? []);
+    zone = 0;
+    tile = 0;
+    paint();
+
+    const placed = result.zones.reduce((n, z) => n + z.items.length, 0);
+    const missed = all.length - placed;
+    toast(
+      first ? `建了 ${result.zones.length} 个分区` : `已整理 ${placed} 项`,
+      missed > 0 ? `${missed} 项没能归类，留在原处` : result.zones.map((z) => z.name).join(" · "),
+      first ? undefined : { label: "撤销", act: () => void undoTidy() },
+    );
+  } catch (err) {
+    previous = null;
+    toast("整理失败", String(err));
+  } finally {
+    tidyBtn.disabled = false;
+    tidyBtn.textContent = "整理";
+  }
+}
+
+// ---------- keyboard ----------
+
+window.addEventListener("keydown", (e) => {
+  // Right-click is swallowed to keep the browser menu away, so this is the way
+  // into the inspector.
+  if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === "i") {
+    e.preventDefault();
+    void invoke("open_devtools");
+    return;
+  }
+
+  // The first-run flow owns the keyboard while it is up. It is dismissed with
+  // 跳过 or 开始用, never by Esc — leaving it half-done would hide the only
+  // explanation the app ever offers.
+  if (firstOpen) {
+    if (e.key === "Enter") void nextStep();
+    return;
+  }
+
+  const ctxOpen = !ctxEl.classList.contains("hide");
+  if (e.key === "Escape") {
+    if (ctxOpen) closeCtx();
+    else if (settingsShowing()) closeSettings();
+    else if (searchOpen) closeSearch();
+    else void dismiss();
+    return;
+  }
+  if (ctxOpen) closeCtx();
+
+  if (settingsShowing()) {
+    // Enter saves; everything else belongs to whichever field has focus.
+    if (e.key === "Enter") void saveSettings();
+    return;
+  }
+
+  if (searchOpen) {
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      if (results.length) {
+        pick = (pick + 1) % results.length;
+        paintResults();
+      }
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      if (results.length) {
+        pick = (pick - 1 + results.length) % results.length;
+        paintResults();
+      }
+    } else if (e.key === "Enter") {
+      const target = results[pick];
+      if (target) void run(target);
+    }
+    return;
+  }
+
+  switch (e.key) {
+    case "ArrowRight":
+      e.preventDefault();
+      moveTile(1);
+      return;
+    case "ArrowLeft":
+      e.preventDefault();
+      moveTile(-1);
+      return;
+    case "Tab":
+      e.preventDefault();
+      moveZone(e.shiftKey ? -1 : 1);
+      return;
+    case "Enter": {
+      const target = inZone()[tile];
+      if (target) void run(target);
+      return;
+    }
+  }
+
+  // Any printable character starts a search — the launcher reflex.
+  if (e.key.length === 1 && !e.ctrlKey && !e.altKey && !e.metaKey) {
+    e.preventDefault();
+    openSearch(e.key);
+  }
+});
+
+queryEl.addEventListener("input", () => {
+  pick = 0;
+  paintResults();
+});
+
+el("searchbtn").addEventListener("click", () => openSearch());
+tidyBtn.addEventListener("click", () => void doTidy());
+el("setbtn").addEventListener("click", () => void openSettings());
+el("setsave").addEventListener("click", () => void saveSettings());
+el("setcancel").addEventListener("click", closeSettings);
+autoEl.addEventListener("click", () => autoEl.classList.toggle("on"));
+el("addzone").addEventListener("click", addZone);
+
+// Applied the moment it is clicked rather than on save: a background treatment
+// can only be judged by looking at it.
+effectEl.addEventListener("click", (e) => {
+  const name = (e.target as HTMLElement).dataset.effect as EffectName | undefined;
+  if (!name) return;
+  applyEffect(name);
+});
+// One scrim serves the overlays, so it dismisses whichever is up — except the
+// first-run flow, which has its own exits.
+scrimEl.addEventListener("click", () => {
+  if (firstOpen) return;
+  if (settingsShowing()) closeSettings();
+  else closeSearch();
+});
+
+el("open").addEventListener("click", () => {
+  const t = selected();
+  if (t) void run(t);
+});
+el("more").addEventListener("click", (e) => {
+  const t = selected();
+  if (!t) return;
+  const box = (e.currentTarget as HTMLElement).getBoundingClientRect();
+  openCtx(t, box.left, box.bottom + 8);
+});
+
+// Any click that is not inside the menu dismisses it, including on a tile.
+window.addEventListener("mousedown", (e) => {
+  const inMenu = ctxEl.contains(e.target as Node);
+  if (!inMenu) closeCtx();
+
+  // Docking costs the desktop surface its normal activation path, so arriving
+  // clicks have to take keyboard focus back explicitly (ADR 0015).
+  //
+  // Only when we do not already hold it. Re-grabbing mid-interaction moves focus
+  // between mousedown and click and the click is never delivered — that is what
+  // made both the context menu items and the tiles unresponsive. Once focus is
+  // ours there is nothing to take.
+  if (isDesktop && !document.hasFocus()) void invoke("grab_focus");
+});
+// The stage has no native menu of its own to offer.
+window.addEventListener("contextmenu", (e) => e.preventDefault());
+el("left").addEventListener("click", () => {
+  railEl.scrollLeft -= 560;
+});
+el("right").addEventListener("click", () => {
+  railEl.scrollLeft += 560;
+});
+
+// ---------- lifecycle ----------
+
+function tickClock(): void {
+  const now = new Date();
+  clockEl.textContent = `${String(now.getHours()).padStart(2, "0")}:${String(
+    now.getMinutes(),
+  ).padStart(2, "0")}`;
+}
+
+// Every summon should feel fresh: search closed, first tile selected, focus here
+// so typing works immediately after the hotkey.
+void win.onFocusChanged(({ payload: focused }) => {
+  if (!focused) {
+    // ADR 0014's hide-on-blur applies to the launchpad only: it is fullscreen and
+    // always-on-top, so any path leaving it visible without focus would bury the
+    // desktop. The desktop surface is neither, and hiding it would remove the
+    // desktop itself.
+    // Onboarding and settings are exempt — someone alt-tabbing to fetch an API
+    // key must not lose the panel they were filling in.
+    if (!isDesktop && !firstOpen && !settingsShowing()) void win.hide();
+    return;
+  }
+  closeSearch();
+  closeSettings();
+  closeCtx();
+  tile = 0;
+  tickClock();
+  paint();
+  // The wallpaper may have changed while we were hidden. Re-reading is cheap:
+  // the registry lookup plus a stat, and the Rust side only re-decodes when the
+  // path or its modified time moved.
+  void loadTheme();
+});
+
+type Theme = { path: string | null; accent: string; brightness: number };
+
+/** Last wallpaper we painted, so a re-read that changed nothing does no work. */
+let themePath: string | null = null;
+let background: Scene | null = null;
+
+/**
+ * Hands every open panel's rectangle to the shader so it can bend the wallpaper
+ * behind them, and thins their own backgrounds out of the way — the darkening
+ * that keeps text legible now happens inside the glass.
+ *
+ * Takes whatever is on screen rather than one named element: the settings panel,
+ * a context menu and the search overlay can be up together, and glass on only one
+ * of them looks worse than glass on none.
+ */
+function refreshGlass(): void {
+  if (!background) return;
+
+  const panels = [searchEl, settingsEl, ctxEl, firstEl].filter(
+    (p) => !p.classList.contains("hide"),
+  );
+
+  // 纯净 has no glass, so panels keep their own CSS backdrop instead of being
+  // thinned out for a refraction that will never be drawn behind them.
+  if (effect === "none") {
+    for (const p of panels) p.classList.remove("glassed");
+    background.setGlass([]);
+    return;
+  }
+
+  background.setGlass(
+    panels.map((p) => {
+      p.classList.add("glassed");
+      // Measured after the class lands and after the entry animation settles —
+      // reading mid-animation gives a rectangle a few pixels off from where the
+      // panel comes to rest, which shows as a second frame outside the border.
+      const box = p.getBoundingClientRect();
+      return {
+        x: box.left,
+        y: box.top,
+        width: box.width,
+        height: box.height,
+        radius: parseFloat(getComputedStyle(p).borderTopLeftRadius) || 20,
+      };
+    }),
+  );
+}
+
+/**
+ * Veil strength from wallpaper brightness. A dark photo needs little help; a
+ * bright one needs a lot before white text holds up. Clamped so the wallpaper
+ * never disappears entirely and never shows through enough to fight the text.
+ *
+ * Applied to a vertical gradient rather than a flat wash — the design darkens the
+ * top and bottom and lets the middle breathe, which reads as depth instead of as
+ * a grey sheet laid over the picture.
+ */
+function veilFor(brightness: number): string {
+  const dim = Math.min(0.66, Math.max(0.26, 0.2 + brightness * 0.52));
+  const at = (extra: number) => `rgba(6, 7, 11, ${(dim + extra).toFixed(2)})`;
+  return `linear-gradient(180deg, ${at(0.14)} 0%, ${at(-0.06)} 36%, ${at(0.2)} 100%)`;
+}
+
+async function loadTheme(): Promise<void> {
+  try {
+    const t = await invoke<Theme>("read_theme");
+    if (t.path === themePath) return;
+    themePath = t.path;
+
+    // Straight at the original file through the asset protocol: full resolution,
+    // no re-encode, and the browser caches the decode for us.
+    const url = t.path ? convertFileSrc(t.path) : "";
+    el("wall").style.backgroundImage = url ? `url("${url}")` : "";
+    if (url) background?.setWallpaper(url);
+    // One variable drives every accent in the sheet — blooms, tabs, buttons,
+    // switches, the pin dot — so the whole interface retints from the wallpaper
+    // in one assignment.
+    document.documentElement.style.setProperty("--accent", t.accent);
+    // The CSS veil is the fallback; when the shader is running it draws its own,
+    // inside the scene, so that the glass refracts it too.
+    el("veil").style.background = veilFor(t.brightness);
+    background?.setAccent(t.accent);
+    background?.setVeil(t.brightness);
+  } catch (err) {
+    console.error("读壁纸失败", err);
+  }
+}
+
+async function loadIcons(): Promise<void> {
+  try {
+    const map = await invoke<Record<string, string>>("icons", {
+      paths: all.map((t) => t.path),
+    });
+    iconOf = new Map(Object.entries(map));
+    paint();
+    if (searchOpen) paintResults();
+  } catch (err) {
+    console.error("图标提取失败", err);
+  }
+}
+
+// ---------- first run ----------
+
+const firstEl = el("first");
+const fTitleEl = el("ftitle");
+const fBodyEl = el("fbody");
+const fContentEl = el("fcontent");
+const fStepEl = el("fstep");
+const fNextEl = el<HTMLButtonElement>("fnext");
+const fSkipEl = el("fskip");
+const fErrEl = el("ferr");
+
+let step = 0;
+let firstOpen = false;
+
+const STEPS = 4;
+
+function paintFirst(): void {
+  el("fdots")
+    .querySelectorAll(".fdot")
+    .forEach((d, i) => d.classList.toggle("on", i <= step));
+  fStepEl.textContent = `第 ${step + 1} / ${STEPS} 步`;
+  fErrEl.textContent = "";
+  fContentEl.replaceChildren();
+  fSkipEl.classList.toggle("hide", step === STEPS - 1);
+  fNextEl.disabled = false;
+
+  if (step === 0) {
+    fTitleEl.textContent = "先给 deskmind 一把钥匙";
+    fBodyEl.textContent =
+      "整理需要一个大模型来判断每个程序是干什么的。填入你自己的 API key，请求直接从这台电脑发给模型厂商，不经过任何中间服务器。";
+    const input = document.createElement("input");
+    input.className = "finput";
+    input.type = "password";
+    input.placeholder = "粘贴 API key";
+    input.id = "fkey";
+    input.addEventListener("keydown", (e) => {
+      e.stopPropagation();
+      if (e.key === "Enter") void nextStep();
+    });
+    const hint = document.createElement("div");
+    hint.className = "fhint";
+    hint.textContent =
+      "默认用 DeepSeek。想换别的 OpenAI 兼容服务，之后在设置里改模型和接口地址。";
+    fContentEl.append(input, hint);
+    fNextEl.textContent = "下一步";
+    setTimeout(() => input.focus(), 0);
+    return;
+  }
+
+  if (step === 1) {
+    fTitleEl.textContent = "正在看你装了些什么";
+    fBodyEl.textContent = `读到 ${all.length} 个启动项，正在判断该分成哪些区。`;
+    const bar = document.createElement("div");
+    bar.id = "fbar";
+    const fill = document.createElement("div");
+    fill.id = "fbarfill";
+    bar.append(fill);
+    fContentEl.append(bar);
+    fNextEl.textContent = "请稍候";
+    fNextEl.disabled = true;
+    return;
+  }
+
+  if (step === 2) {
+    fTitleEl.textContent = "这样分行吗";
+    fBodyEl.textContent =
+      "这是建议，不是决定。名字可以改，多余的可以删——分区是你的，之后每次整理 AI 只会往这些分区里放东西，不会自己新建。";
+    fContentEl.append(...zoneRowNodes(stored, (next) => void commitZones(next)));
+    fNextEl.textContent = "就这样";
+    return;
+  }
+
+  fTitleEl.textContent = "可以用了";
+  fBodyEl.textContent =
+    "按 Alt + Space 随时唤出。直接打字搜索，回车打开。装了新程序就再点一次「整理」。";
+  fNextEl.textContent = "开始用";
+}
+
+async function nextStep(): Promise<void> {
+  fErrEl.textContent = "";
+
+  if (step === 0) {
+    const key = (document.getElementById("fkey") as HTMLInputElement | null)?.value ?? "";
+    if (!key.trim()) {
+      fErrEl.textContent = "还没填 key。也可以点「跳过」，之后在设置里补。";
+      return;
+    }
+    try {
+      await invoke("write_settings", {
+        apiKey: key,
+        model: "",
+        baseUrl: "",
+        effect: "",
+        autostartOn: true,
+      });
+    } catch (err) {
+      fErrEl.textContent = String(err);
+      return;
+    }
+    step = 1;
+    paintFirst();
+    // The suggestion runs while step 1 is on screen; its outcome decides whether
+    // we advance to the review step or fall back to it empty.
+    try {
+      const result = await invoke<Zones>("run_tidy");
+      stored = result.zones;
+      paint();
+    } catch (err) {
+      step = 0;
+      paintFirst();
+      fErrEl.textContent = String(err);
+      return;
+    }
+    step = 2;
+    paintFirst();
+    return;
+  }
+
+  if (step === 1) return;
+
+  if (step === 2) {
+    step = 3;
+    paintFirst();
+    return;
+  }
+
+  await closeFirst();
+}
+
+async function closeFirst(): Promise<void> {
+  firstOpen = false;
+  firstEl.classList.add("hide");
+  scrimEl.classList.add("hide");
+  // The window is fullscreen and always-on-top, so finishing onboarding without
+  // hiding it leaves a sheet covering every other application.
+  await win.hide();
+  try {
+    await invoke("finish_onboarding");
+  } catch (err) {
+    console.error("标记首次运行完成失败", err);
+  }
+}
+
+function openFirst(): void {
+  firstOpen = true;
+  step = 0;
+  scrimEl.classList.remove("hide");
+  firstEl.classList.remove("hide");
+  paintFirst();
+}
+
+fNextEl.addEventListener("click", () => void nextStep());
+fSkipEl.addEventListener("click", () => void closeFirst());
+
+async function load(): Promise<void> {
+  tickClock();
+  setInterval(tickClock, 20_000);
+  try {
+    // Both surfaces. The search panel — the one the glass is built for — is seen
+    // far more often on the launchpad than on the desktop, and a hidden window
+    // is not painted, so the launchpad's loop costs nothing while it is away.
+    background = startBackground(isDesktop);
+    void loadTheme();
+    void invoke<Settings>("read_settings").then((s) => applyEffect(s.effect));
+
+    all = await invoke<LaunchTarget[]>("list_targets");
+    await loadZones();
+    paint();
+    void loadIcons();
+
+    // Both surfaces render this page, so first run has to pick one or it plays
+    // twice. The desktop surface is the one that is already on screen.
+    if (isDesktop) {
+      const s = await invoke<{ onboarded: boolean }>("status");
+      if (!s.onboarded) {
+        openFirst();
+        await win.setFocus();
+      }
+    }
+  } catch (err) {
+    railMetaEl.textContent = "扫描失败";
+    console.error(err);
+  }
+}
+
+void load();

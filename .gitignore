@@ -1,0 +1,7 @@
+node_modules/
+dist/
+src-tauri/target/
+
+# S1 spike output contains real machine contents
+spikes/s1-grouping/s1-result.md
+spikes/s1-grouping/s1-raw.json
