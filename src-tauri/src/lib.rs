@@ -121,6 +121,14 @@ fn open_devtools(window: WebviewWindow) {
     let _ = window;
 }
 
+/// Quits. The desktop surface covers the real desktop, so the stage menu needs a
+/// way out that does not require finding the tray icon first — being unable to
+/// dismiss what is covering your desktop is the worst failure this app has.
+#[tauri::command]
+fn quit(app: AppHandle) {
+    app.exit(0);
+}
+
 /// Polled by the desktop surface so it can stop drawing when nobody can see it.
 #[tauri::command]
 fn desktop_occluded() -> desktop::Occlusion {
@@ -322,6 +330,7 @@ pub fn run() {
             read_theme,
             grab_focus,
             open_devtools,
+            quit,
             desktop_occluded,
             status,
             open_config,

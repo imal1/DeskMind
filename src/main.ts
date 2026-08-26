@@ -151,35 +151,53 @@ function closeCtx(): void {
   refreshGlass();
 }
 
+function menuItem(label: string, act: () => void): HTMLButtonElement {
+  const b = document.createElement("button");
+  b.className = "ctxitem";
+  b.textContent = label;
+  b.addEventListener("click", () => {
+    closeCtx();
+    act();
+  });
+  return b;
+}
+
+function menuSep(): HTMLElement {
+  const sep = document.createElement("div");
+  sep.className = "ctxsep";
+  return sep;
+}
+
+/** Shows the one menu element at (x, y), nudged back inside the viewport. */
+function openMenu(nodes: HTMLElement[], x: number, y: number): void {
+  ctxEl.replaceChildren(...nodes);
+
+  // Show first so the measured size is real, then nudge.
+  ctxEl.classList.remove("hide");
+  const box = ctxEl.getBoundingClientRect();
+  ctxEl.style.left = `${Math.min(x, window.innerWidth - box.width - 12)}px`;
+  ctxEl.style.top = `${Math.min(y, window.innerHeight - box.height - 12)}px`;
+  refreshGlass();
+}
+
 function openCtx(t: LaunchTarget, x: number, y: number): void {
   const head = document.createElement("div");
   head.id = "ctxhead";
   head.textContent = t.name;
 
-  const item = (label: string, act: () => void): HTMLButtonElement => {
-    const b = document.createElement("button");
-    b.className = "ctxitem";
-    b.textContent = label;
-    b.addEventListener("click", () => {
-      closeCtx();
-      act();
-    });
-    return b;
-  };
-
   // No 打开 here: the detail panel has a button for it and a tile opens on
   // double-click, so a third way would just be noise.
   const nodes: HTMLElement[] = [
     head,
-    item(pinned.has(t.path) ? "取消固定" : "固定", () => togglePin(t)),
-    item("打开所在文件夹", () => void revealIn(t)),
-    item("复制路径", () => void copyPath(t)),
+    menuItem(pinned.has(t.path) ? "取消固定" : "固定", () => togglePin(t)),
+    menuItem("打开所在文件夹", () => void revealIn(t)),
+    menuItem("复制路径", () => void copyPath(t)),
   ];
 
   // Only dropped-in targets can be removed: a scanned one would come straight
   // back on the next scan. "移除" and not "删除" — the file is not touched.
   if (t.source === "added") {
-    nodes.push(item("移除启动项", () => void removeTarget(t)));
+    nodes.push(menuItem("移除启动项", () => void removeTarget(t)));
   }
 
   // Listed flat rather than behind a submenu: with a handful of zones the extra
@@ -187,22 +205,59 @@ function openCtx(t: LaunchTarget, x: number, y: number): void {
   const current = zoneOf(t);
   const elsewhere = stored.filter((z) => z.name !== current);
   if (elsewhere.length > 0) {
-    const sep = document.createElement("div");
-    sep.className = "ctxsep";
-    nodes.push(sep);
+    nodes.push(menuSep());
     for (const z of elsewhere) {
-      nodes.push(item(`移到「${z.name}」`, () => moveTo(t, z.name)));
+      nodes.push(menuItem(`移到「${z.name}」`, () => moveTo(t, z.name)));
     }
   }
 
-  ctxEl.replaceChildren(...nodes);
+  openMenu(nodes, x, y);
+}
 
-  // Show first so the measured size is real, then nudge back inside the viewport.
-  ctxEl.classList.remove("hide");
-  const box = ctxEl.getBoundingClientRect();
-  ctxEl.style.left = `${Math.min(x, window.innerWidth - box.width - 12)}px`;
-  ctxEl.style.top = `${Math.min(y, window.innerHeight - box.height - 12)}px`;
-  refreshGlass();
+/**
+ * The menu for empty stage, standing in for the desktop's own.
+ *
+ * ADR 0015 accepts that the desktop surface covers the real icons, on the
+ * condition that deskmind takes over what they were for. Right-clicking bare
+ * desktop was the part still missing: the stage swallowed the event and offered
+ * nothing back, so refresh, display settings, personalise and — worst — any way
+ * out short of hunting for the tray icon were simply gone.
+ *
+ * 新建 is deliberately absent. It writes a file into the desktop folder, and
+ * whether deskmind may do that is a decision of its own, not a gap to plug here.
+ */
+function openStageMenu(x: number, y: number): void {
+  openMenu(
+    [
+      menuItem("刷新", () => void reloadTargets()),
+      menuSep(),
+      menuItem("整理", () => void doTidy()),
+      menuItem("设置", () => void openSettings()),
+      menuSep(),
+      // Handed to the shell exactly like a launch target: ms-settings: is a URI
+      // the shell already knows how to open, so this needs no new command.
+      menuItem("显示设置", () => void invoke("launch", { path: "ms-settings:display" })),
+      menuItem("个性化", () => void invoke("launch", { path: "ms-settings:personalization" })),
+      menuSep(),
+      menuItem("退出 deskmind", () => void invoke("quit")),
+    ],
+    x,
+    y,
+  );
+}
+
+/** Re-reads launch targets and zones from disk. What 刷新 means here. */
+async function reloadTargets(): Promise<void> {
+  try {
+    all = await invoke<LaunchTarget[]>("list_targets");
+    await loadZones();
+  } catch (err) {
+    toast("刷新失败", String(err));
+    return;
+  }
+  paint();
+  void loadIcons();
+  toast(`已刷新 ${all.length} 个启动项`);
 }
 
 // ---------- rail ----------
@@ -916,8 +971,20 @@ window.addEventListener("mousedown", (e) => {
   // ours there is nothing to take.
   if (isDesktop && !document.hasFocus()) void invoke("grab_focus");
 });
-// The stage has no native menu of its own to offer.
-window.addEventListener("contextmenu", (e) => e.preventDefault());
+// The browser menu never helps here, so it always goes. Bare stage gets the
+// stand-in for the desktop menu it is covering; anything with its own handler
+// (tiles) or its own affordances (panels, controls) is left alone.
+//
+// Desktop surface only. The launchpad covers nothing — Esc puts the real
+// desktop back — so there is nothing there for a stand-in to stand in for.
+window.addEventListener("contextmenu", (e) => {
+  e.preventDefault();
+  if (!isDesktop) return;
+  const onControl = (e.target as HTMLElement).closest(
+    ".tile, .tab, .pill, .panel, #hero, #ctx, .resrow, #left, #right, button, input",
+  );
+  if (!onControl) openStageMenu(e.clientX, e.clientY);
+});
 el("left").addEventListener("click", () => {
   railEl.scrollLeft -= 560;
 });
