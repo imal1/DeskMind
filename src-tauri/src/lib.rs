@@ -13,20 +13,11 @@ mod zones;
 use std::collections::HashMap;
 use tauri::{
     menu::{Menu, MenuItem},
-    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
+    tray::TrayIconBuilder,
     AppHandle, Manager, State, WebviewWindow,
 };
-use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 
-const LAUNCHPAD: &str = "launchpad";
 const DESKTOP: &str = "desktop";
-
-/// Alt+Space, not Ctrl+Space: on Chinese Windows the latter is the IME's
-/// English/Chinese toggle, so it never reaches us. Alt+Space nominally opens the
-/// window system menu, but a registered global shortcut takes precedence — this
-/// is the same key PowerToys Run uses.
-const HOTKEY_MODS: Modifiers = Modifiers::ALT;
-const HOTKEY_CODE: Code = Code::Space;
 
 #[tauri::command]
 fn list_targets() -> Vec<targets::LaunchTarget> {
@@ -101,9 +92,10 @@ fn read_theme(cache: State<theme::ThemeCache>) -> theme::Theme {
     theme::current(&cache)
 }
 
-/// Called by the desktop window on every mouse-down. Docking costs us the normal
-/// activation path, so keyboard focus has to be taken deliberately each time the
-/// user touches the surface (ADR 0015).
+/// Called by the desktop window when it needs the keyboard. `WS_EX_NOACTIVATE`
+/// keeps a click from raising the surface over other windows, and the price is
+/// that a click never brings the keyboard either — so it is asked for by hand
+/// (ADR 0015).
 #[tauri::command]
 fn grab_focus(app: AppHandle) -> Result<(), String> {
     let window = app.get_webview_window(DESKTOP).ok_or("找不到桌面窗口")?;
@@ -130,8 +122,15 @@ fn quit(app: AppHandle) {
 }
 
 /// Polled by the desktop surface so it can stop drawing when nobody can see it.
+///
+/// The same poll puts the window back at the bottom of the z-order, because the
+/// two need the same heartbeat and a second timer would only be another thing to
+/// keep in step.
 #[tauri::command]
-fn desktop_occluded() -> desktop::Occlusion {
+fn desktop_occluded(window: WebviewWindow) -> desktop::Occlusion {
+    if let Ok(hwnd) = desktop::handle_of(&window) {
+        desktop::hold(hwnd);
+    }
     desktop::occluded()
 }
 
@@ -292,30 +291,6 @@ async fn run_tidy() -> Result<zones::Zones, String> {
     Ok(applied)
 }
 
-fn launchpad(app: &AppHandle) -> Option<WebviewWindow> {
-    app.get_webview_window(LAUNCHPAD)
-}
-
-fn show(app: &AppHandle) {
-    if let Some(w) = launchpad(app) {
-        let _ = w.show();
-        let _ = w.set_focus();
-    }
-}
-
-/// The launchpad is summoned and dismissed, never opened and closed. Every
-/// entry point (hotkey, tray click, Esc) funnels through show/hide so the
-/// window's lifetime is independent of the process's.
-fn toggle(app: &AppHandle) {
-    let Some(w) = launchpad(app) else { return };
-    if w.is_visible().unwrap_or(false) {
-        let _ = w.hide();
-    } else {
-        let _ = w.show();
-        let _ = w.set_focus();
-    }
-}
-
 pub fn run() {
     tauri::Builder::default()
         .manage(icons::IconCache::default())
@@ -349,67 +324,45 @@ pub fn run() {
                 let _ = config::save(&cfg);
             }
 
-            let open = MenuItem::with_id(app, "open", "打开启动台", true, None::<&str>)?;
-            let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&open, &quit])?;
+            // The tray is now only an escape hatch. The stage's own menu carries
+            // everything else, and there is no launchpad left to summon.
+            let quit_item = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
+            let menu = Menu::with_items(app, &[&quit_item])?;
 
             TrayIconBuilder::with_id("tray")
                 .icon(app.default_window_icon().unwrap().clone())
                 .tooltip("deskmind")
                 .menu(&menu)
-                // Left click toggles; the menu belongs to right click only.
-                .show_menu_on_left_click(false)
-                .on_menu_event(|app, event| match event.id.as_ref() {
-                    "open" => show(app),
-                    "quit" => app.exit(0),
-                    _ => {}
-                })
-                .on_tray_icon_event(|tray, event| {
-                    if let TrayIconEvent::Click {
-                        button: MouseButton::Left,
-                        button_state: MouseButtonState::Up,
-                        ..
-                    } = event
-                    {
-                        toggle(tray.app_handle());
+                .show_menu_on_left_click(true)
+                .on_menu_event(|app, event| {
+                    if event.id.as_ref() == "quit" {
+                        app.exit(0);
                     }
                 })
                 .build(app)?;
 
-            // Dock the desktop surface before showing it: parenting first means
-            // it never appears as a normal window, not even for a frame.
+            // Settle *after* showing. Tauri writes the extended style itself while
+            // acting on decorations/skipTaskbar/shadow, so styling first left the
+            // window plain and activating by the time it appeared. The occlusion
+            // poll re-asserts it from here on.
             if let Some(surface) = app.get_webview_window(DESKTOP) {
-                if let Err(err) = desktop::handle_of(&surface).and_then(desktop::dock) {
-                    // Shown anyway, just as an ordinary window: it is the surface
-                    // that carries first-run, so hiding it on failure would leave
-                    // a new user with nothing at all.
-                    eprintln!("挂到桌面层失败，作为普通窗口显示：{err}");
-                }
                 let _ = surface.show();
+                if let Err(err) = desktop::handle_of(&surface).and_then(desktop::settle) {
+                    // Shown anyway, just as an ordinary window: this surface
+                    // carries first-run, so hiding it on failure would leave a
+                    // new user with nothing at all.
+                    eprintln!("放到桌面位置失败，作为普通窗口显示：{err}");
+                }
             }
-
-            let hotkey = Shortcut::new(Some(HOTKEY_MODS), HOTKEY_CODE);
-            app.handle().plugin(
-                tauri_plugin_global_shortcut::Builder::new()
-                    .with_handler(|app, shortcut, event| {
-                        if event.state == ShortcutState::Pressed
-                            && shortcut.matches(HOTKEY_MODS, HOTKEY_CODE)
-                        {
-                            toggle(app);
-                        }
-                    })
-                    .build(),
-            )?;
-            app.global_shortcut().register(hotkey)?;
 
             Ok(())
         })
-        .on_window_event(|window, event| {
-            // Closing the window would end the process. The tray owns the
-            // process lifetime, so a close request means "dismiss".
+        .on_window_event(|_window, event| {
+            // There is nowhere to dismiss to. Hiding the only surface would take
+            // the desktop away; quitting is what the tray and the stage menu are
+            // for, so a close request is simply refused.
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
-                let _ = window.hide();
             }
         })
         .run(tauri::generate_context!())

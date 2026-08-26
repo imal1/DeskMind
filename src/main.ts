@@ -14,18 +14,6 @@ type Zones = { zones: StoredZone[]; pinned: string[] };
 
 const win = getCurrentWindow();
 
-/**
- * The same page renders both surfaces (ADR 0015). The desktop one is parented
- * into the desktop layer and must never hide — hiding it would leave the user
- * without a desktop. The launchpad one is a normal window summoned by hotkey.
- */
-const isDesktop = win.label === "desktop";
-
-/** Hides the launchpad. On the desktop surface there is nothing to hide. */
-async function dismiss(): Promise<void> {
-  if (!isDesktop) await win.hide();
-}
-
 const el = <T extends HTMLElement>(id: string): T =>
   document.getElementById(id) as T;
 
@@ -677,6 +665,9 @@ function openSearch(seed = ""): void {
   scrimEl.classList.remove("hide");
   searchEl.classList.remove("hide");
   paintResults();
+  // WS_EX_NOACTIVATE means a click never brought the keyboard with it, so the
+  // surface has to ask for it before a DOM focus() can mean anything.
+  void invoke("grab_focus");
   queryEl.focus();
   // Straight away: panels fade in without moving, so the rectangle is already
   // its resting position on the first frame.
@@ -693,7 +684,6 @@ function closeSearch(): void {
 // ---------- actions ----------
 
 async function revealIn(target: LaunchTarget): Promise<void> {
-  await dismiss();
   try {
     await invoke("reveal", { path: target.path });
   } catch (err) {
@@ -710,10 +700,8 @@ async function copyPath(target: LaunchTarget): Promise<void> {
 }
 
 async function run(target: LaunchTarget): Promise<void> {
-  // Get out of the way first so the launched app is never stuck behind us. On the
-  // desktop surface there is nothing to get out of the way — the app opens on top
-  // of us the way it would over any desktop.
-  await dismiss();
+  // Nothing to get out of the way: we are the desktop, so the launched app opens
+  // on top of us the way it would over any desktop.
   try {
     await invoke("launch", { path: target.path });
   } catch (err) {
@@ -860,7 +848,8 @@ window.addEventListener("keydown", (e) => {
     if (ctxOpen) closeCtx();
     else if (settingsShowing()) closeSettings();
     else if (searchOpen) closeSearch();
-    else void dismiss();
+    // Nothing left to dismiss to — Esc on the bare desktop does nothing, the
+    // same as it does on the real one.
     return;
   }
   if (ctxOpen) closeCtx();
@@ -962,14 +951,6 @@ window.addEventListener("mousedown", (e) => {
   const inMenu = ctxEl.contains(e.target as Node);
   if (!inMenu) closeCtx();
 
-  // Docking costs the desktop surface its normal activation path, so arriving
-  // clicks have to take keyboard focus back explicitly (ADR 0015).
-  //
-  // Only when we do not already hold it. Re-grabbing mid-interaction moves focus
-  // between mousedown and click and the click is never delivered — that is what
-  // made both the context menu items and the tiles unresponsive. Once focus is
-  // ours there is nothing to take.
-  if (isDesktop && !document.hasFocus()) void invoke("grab_focus");
 });
 // The browser menu never helps here, so it always goes. Bare stage gets the
 // stand-in for the desktop menu it is covering; anything with its own handler
@@ -979,7 +960,6 @@ window.addEventListener("mousedown", (e) => {
 // desktop back — so there is nothing there for a stand-in to stand in for.
 window.addEventListener("contextmenu", (e) => {
   e.preventDefault();
-  if (!isDesktop) return;
   const onControl = (e.target as HTMLElement).closest(
     ".tile, .tab, .pill, .panel, #hero, #ctx, .resrow, #left, #right, button, input",
   );
@@ -1001,30 +981,6 @@ function tickClock(): void {
   ).padStart(2, "0")}`;
 }
 
-// Every summon should feel fresh: search closed, first tile selected, focus here
-// so typing works immediately after the hotkey.
-void win.onFocusChanged(({ payload: focused }) => {
-  if (!focused) {
-    // ADR 0014's hide-on-blur applies to the launchpad only: it is fullscreen and
-    // always-on-top, so any path leaving it visible without focus would bury the
-    // desktop. The desktop surface is neither, and hiding it would remove the
-    // desktop itself.
-    // Onboarding and settings are exempt — someone alt-tabbing to fetch an API
-    // key must not lose the panel they were filling in.
-    if (!isDesktop && !firstOpen && !settingsShowing()) void win.hide();
-    return;
-  }
-  closeSearch();
-  closeSettings();
-  closeCtx();
-  tile = 0;
-  tickClock();
-  paint();
-  // The wallpaper may have changed while we were hidden. Re-reading is cheap:
-  // the registry lookup plus a stat, and the Rust side only re-decodes when the
-  // path or its modified time moved.
-  void loadTheme();
-});
 
 type Theme = { path: string | null; accent: string; brightness: number };
 
@@ -1260,9 +1216,6 @@ async function closeFirst(): Promise<void> {
   firstOpen = false;
   firstEl.classList.add("hide");
   scrimEl.classList.add("hide");
-  // The window is fullscreen and always-on-top, so finishing onboarding without
-  // hiding it leaves a sheet covering every other application.
-  await win.hide();
   try {
     await invoke("finish_onboarding");
   } catch (err) {
@@ -1341,7 +1294,7 @@ async function load(): Promise<void> {
     // Both surfaces. The search panel — the one the glass is built for — is seen
     // far more often on the launchpad than on the desktop, and a hidden window
     // is not painted, so the launchpad's loop costs nothing while it is away.
-    background = startBackground(isDesktop);
+    background = startBackground(true);
     void loadTheme();
     void invoke<Settings>("read_settings").then((s) => applyEffect(s.effect));
 
@@ -1355,14 +1308,12 @@ async function load(): Promise<void> {
       }
     });
 
-    // Both surfaces render this page, so first run has to pick one or it plays
-    // twice. The desktop surface is the one that is already on screen.
-    if (isDesktop) {
-      const s = await invoke<{ onboarded: boolean }>("status");
-      if (!s.onboarded) {
-        openFirst();
-        await win.setFocus();
-      }
+    const s = await invoke<{ onboarded: boolean }>("status");
+    if (!s.onboarded) {
+      openFirst();
+      // First run is the one moment the surface needs the keyboard before the
+      // user has clicked anything.
+      void invoke("grab_focus");
     }
   } catch (err) {
     railMetaEl.textContent = "扫描失败";

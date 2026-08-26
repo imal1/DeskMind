@@ -1,4 +1,11 @@
-//! Living on the desktop layer. See ADR 0015 and `spikes/s3-workerw/FINDINGS.md`.
+//! Living on the desktop. See ADR 0015.
+//!
+//! deskmind is an ordinary top-level window pinned to the bottom of the z-order,
+//! not a child of Progman. Reparenting was tried first and reaches the screen
+//! fine, but a WebView2 under Progman never receives a single mouse message —
+//! the interface renders and then ignores every click. The spike that blessed
+//! `SetParent` used Notepad, a plain Win32 window; WebView2 routes input through
+//! its own out-of-process widget and does not survive the move.
 //!
 //! The Win32 entry points are declared here by hand rather than pulled from the
 //! `windows` crate: `HWND` has changed between `isize` and `*mut c_void` across
@@ -20,28 +27,16 @@ struct Rect {
 
 #[link(name = "user32")]
 extern "system" {
-    fn FindWindowW(class: *const u16, window: *const u16) -> Hwnd;
-    fn FindWindowExW(parent: Hwnd, after: Hwnd, class: *const u16, window: *const u16) -> Hwnd;
-    fn SendMessageTimeoutW(
-        hwnd: Hwnd,
-        msg: u32,
-        wparam: usize,
-        lparam: isize,
-        flags: u32,
-        timeout: u32,
-        result: *mut usize,
-    ) -> isize;
-    fn EnumWindows(callback: extern "system" fn(Hwnd, isize) -> i32, lparam: isize) -> i32;
-    fn SetParent(child: Hwnd, parent: Hwnd) -> Hwnd;
     fn SetWindowPos(hwnd: Hwnd, after: Hwnd, x: i32, y: i32, cx: i32, cy: i32, flags: u32) -> i32;
+    fn GetWindowLongPtrW(hwnd: Hwnd, index: i32) -> isize;
+    fn SetWindowLongPtrW(hwnd: Hwnd, index: i32, value: isize) -> isize;
+    fn ShowWindow(hwnd: Hwnd, cmd: i32) -> i32;
     fn GetClassNameW(hwnd: Hwnd, buf: *mut u16, max: i32) -> i32;
-    fn IsWindowVisible(hwnd: Hwnd) -> i32;
     fn GetWindowRect(hwnd: Hwnd, rect: *mut Rect) -> i32;
     fn GetSystemMetrics(index: i32) -> i32;
     fn GetForegroundWindow() -> Hwnd;
     fn SetForegroundWindow(hwnd: Hwnd) -> i32;
     fn SetFocus(hwnd: Hwnd) -> Hwnd;
-    fn GetParent(hwnd: Hwnd) -> Hwnd;
     fn GetWindowThreadProcessId(hwnd: Hwnd, pid: *mut u32) -> u32;
     fn AttachThreadInput(attach: u32, attach_to: u32, join: i32) -> i32;
     fn IsIconic(hwnd: Hwnd) -> i32;
@@ -55,18 +50,21 @@ extern "system" {
     fn GetCurrentThreadId() -> u32;
 }
 
-/// Undocumented. Makes the shell create the WorkerW that backs the desktop.
-const SPAWN_WORKERW: u32 = 0x052C;
-const SMTO_NORMAL: u32 = 0x0000;
 const SM_CXSCREEN: i32 = 0;
 const SM_CYSCREEN: i32 = 1;
-const SWP_NOZORDER: u32 = 0x0004;
+const SWP_NOSIZE: u32 = 0x0001;
+const SWP_NOMOVE: u32 = 0x0002;
 const SWP_NOACTIVATE: u32 = 0x0010;
 const SWP_SHOWWINDOW: u32 = 0x0040;
-
-fn wide(s: &str) -> Vec<u16> {
-    s.encode_utf16().chain(std::iter::once(0)).collect()
-}
+const SWP_FRAMECHANGED: u32 = 0x0020;
+/// Last in the z-order, which is where a desktop belongs.
+const HWND_BOTTOM: Hwnd = 1;
+const GWL_EXSTYLE: i32 = -20;
+/// Keeps a click from raising us over the windows the user is actually using.
+const WS_EX_NOACTIVATE: isize = 0x0800_0000;
+/// Keeps us out of Alt+Tab. A desktop is not something you tab to.
+const WS_EX_TOOLWINDOW: isize = 0x0000_0080;
+const SW_SHOWNOACTIVATE: i32 = 4;
 
 fn class_of(hwnd: Hwnd) -> String {
     let mut buf = [0u16; 256];
@@ -77,126 +75,113 @@ fn class_of(hwnd: Hwnd) -> String {
     String::from_utf16_lossy(&buf[..len as usize])
 }
 
-fn has_icon_layer(hwnd: Hwnd) -> bool {
-    let class = wide("SHELLDLL_DefView");
-    unsafe { FindWindowExW(hwnd, 0, class.as_ptr(), std::ptr::null()) != 0 }
-}
-
-extern "system" fn collect(hwnd: Hwnd, lparam: isize) -> i32 {
-    // Safety: `lparam` is the &mut Vec we passed to EnumWindows, which outlives
-    // the call because EnumWindows is synchronous.
-    let out = unsafe { &mut *(lparam as *mut Vec<Hwnd>) };
-    out.push(hwnd);
-    1
-}
-
-fn top_level_windows() -> Vec<Hwnd> {
-    let mut found: Vec<Hwnd> = Vec::with_capacity(256);
-    unsafe {
-        EnumWindows(collect, &mut found as *mut Vec<Hwnd> as isize);
-    }
-    found
-}
-
-fn progman() -> Option<Hwnd> {
-    let class = wide("Progman");
-    let hwnd = unsafe { FindWindowW(class.as_ptr(), std::ptr::null()) };
-    (hwnd != 0).then_some(hwnd)
-}
-
-/// Asks the shell for the desktop-backing WorkerW and returns the window to
-/// parent into.
+/// Applies the two styles that make a window behave like a desktop.
 ///
-/// Two shell layouts exist. On the machine S3 was run on, the icon layer lives
-/// under Progman and every WorkerW is empty, which breaks the widely-quoted
-/// "take the WorkerW sibling after the one holding SHELLDLL_DefView" recipe. So
-/// the choice is made on observable properties instead: a full-screen, visible
-/// WorkerW that hosts no icon layer of its own.
-fn desktop_parent() -> Option<Hwnd> {
-    let progman = progman()?;
-
-    let mut ignored: usize = 0;
+/// `WS_EX_NOACTIVATE` is the important one: it keeps a click on a tile from
+/// raising the whole surface over the windows the user is working in — a real
+/// desktop never comes to the front. Mouse messages still arrive; only
+/// activation is refused, which is why the keyboard has to be asked for
+/// separately (see `grab_focus`). `WS_EX_TOOLWINDOW` takes us out of Alt+Tab.
+///
+/// Returns whether anything changed, so the caller can skip the repositioning
+/// that only matters when it did.
+///
+/// Applied repeatedly rather than once at startup. Tauri writes the extended
+/// style itself when it acts on `decorations`, `skipTaskbar` and `shadow`, and
+/// doing that after we had set ours put the window back to plain and activating —
+/// which is exactly the state this is meant to prevent. Re-asserting costs one
+/// call per second and cannot be undone by whatever Tauri does next.
+fn apply_styles(hwnd: Hwnd) -> bool {
     unsafe {
-        SendMessageTimeoutW(
-            progman,
-            SPAWN_WORKERW,
-            0,
-            0,
-            SMTO_NORMAL,
-            1000,
-            &mut ignored,
-        );
+        let ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+        let want = ex | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW;
+        if ex == want {
+            return false;
+        }
+        SetWindowLongPtrW(hwnd, GWL_EXSTYLE, want);
+        true
     }
-
-    let screen_w = unsafe { GetSystemMetrics(SM_CXSCREEN) };
-    let candidates: Vec<Hwnd> = top_level_windows()
-        .into_iter()
-        .filter(|h| class_of(*h) == "WorkerW" && !has_icon_layer(*h))
-        .collect();
-
-    let full_screen = |h: &Hwnd| {
-        let mut rect = Rect::default();
-        unsafe { GetWindowRect(*h, &mut rect) };
-        rect.right - rect.left >= screen_w
-    };
-
-    candidates
-        .iter()
-        .find(|h| full_screen(h) && unsafe { IsWindowVisible(**h) } != 0)
-        .or_else(|| candidates.iter().find(|h| full_screen(h)))
-        .copied()
-        // Progman itself is still the desktop layer — just above the icons rather
-        // than below them, which is fine because we draw our own tiles.
-        .or(Some(progman))
 }
 
-/// Parents `child` into the desktop layer and sizes it to the primary screen.
-pub fn dock(child: Hwnd) -> Result<(), String> {
-    let parent = desktop_parent().ok_or("找不到桌面层窗口")?;
+/// Turns the window into the desktop: styled, bottom of the z-order, sized to
+/// the primary screen.
+pub fn settle(hwnd: Hwnd) -> Result<(), String> {
+    apply_styles(hwnd);
     unsafe {
-        SetParent(child, parent);
         let w = GetSystemMetrics(SM_CXSCREEN);
         let h = GetSystemMetrics(SM_CYSCREEN);
-        SetWindowPos(
-            child,
-            0,
-            0,
-            0,
-            w,
-            h,
-            SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW,
-        );
+        if SetWindowPos(hwnd, HWND_BOTTOM, 0, 0, w, h, SWP_NOACTIVATE | SWP_SHOWWINDOW) == 0 {
+            return Err("无法把窗口放到桌面位置".into());
+        }
     }
     Ok(())
 }
 
-/// Hands keyboard focus to a docked window.
+/// Puts the surface back where a desktop belongs, for the cases Windows moves it.
 ///
-/// Keyboard messages only reach the focus window of the *active top-level*
-/// window, and after docking that is the desktop, not us. Joining the input
-/// queues lets `SetFocus` reach across, which is the manoeuvre S3 verified.
+/// Two of them exist. Win+D and "show desktop" minimise every top-level window,
+/// and being a top-level window we are included — a reparented child never was,
+/// and this is the one thing that arrangement did better. And an application
+/// that calls `SetWindowPos(HWND_TOPMOST)` while starting can end up underneath
+/// us, because we are at the bottom only until something else claims it.
 ///
-/// Windows restricts `SetForegroundWindow`, but lifts the restriction for the
-/// process that just received input — and this only ever runs in response to a
-/// click on our own window, so we qualify.
-pub fn grab_focus(child: Hwnd) {
+/// Cheap enough to run on the occlusion poll: two calls, and the reposition is
+/// skipped entirely unless the window actually moved.
+pub fn hold(hwnd: Hwnd) {
+    // Tauri can write the extended style back at any point, so this is checked
+    // every tick rather than trusted from startup.
+    let restyled = apply_styles(hwnd);
     unsafe {
-        let mut top = child;
-        loop {
-            let parent = GetParent(top);
-            if parent == 0 {
-                break;
-            }
-            top = parent;
+        if IsIconic(hwnd) != 0 {
+            ShowWindow(hwnd, SW_SHOWNOACTIVATE);
         }
+        // A style change only takes effect on the next frame change, so a window
+        // that just regained WS_EX_NOACTIVATE has to be told to redraw its frame.
+        if restyled {
+            SetWindowPos(
+                hwnd,
+                HWND_BOTTOM,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE | SWP_FRAMECHANGED,
+            );
+        }
+        // Not while we hold the foreground. `grab_focus` puts us there on purpose
+        // when the search box needs the keyboard, and sinking mid-typing would
+        // drop the surface behind whatever the user last had open.
+        if GetForegroundWindow() == hwnd {
+            return;
+        }
+        SetWindowPos(
+            hwnd,
+            HWND_BOTTOM,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE,
+        );
+    }
+}
 
+/// Hands keyboard focus to the desktop surface.
+///
+/// `WS_EX_NOACTIVATE` means clicking us never gives us the keyboard, which is
+/// what we want for tiles and wrong for the search box. Joining the foreground
+/// thread's input queue lets `SetFocus` reach across; Windows restricts
+/// `SetForegroundWindow` but lifts that for a process that just received input,
+/// and this only runs in response to a click on our own window.
+pub fn grab_focus(hwnd: Hwnd) {
+    unsafe {
         let mut pid = 0u32;
         let foreground = GetWindowThreadProcessId(GetForegroundWindow(), &mut pid);
         let mine = GetCurrentThreadId();
 
         let joined = AttachThreadInput(mine, foreground, 1) != 0;
-        SetForegroundWindow(top);
-        SetFocus(child);
+        SetForegroundWindow(hwnd);
+        SetFocus(hwnd);
         if joined {
             AttachThreadInput(mine, foreground, 0);
         }
@@ -205,10 +190,10 @@ pub fn grab_focus(child: Hwnd) {
 
 /// Whether the desktop surface is completely hidden behind another window.
 ///
-/// Windows has no cheap "am I occluded" call, and the browser will not help: a
-/// docked window is never minimised, so `document.visibilityState` stays
-/// `visible` and `requestAnimationFrame` keeps firing at full rate behind a
-/// maximised app. S4 measured exactly that. Without this check a background
+/// Windows has no cheap "am I occluded" call, and the browser will not help: the
+/// surface is never minimised while it is being the desktop, so
+/// `document.visibilityState` stays `visible` and `requestAnimationFrame` keeps
+/// firing at full rate behind a maximised app. S4 measured exactly that. Without this check a background
 /// shader would burn the GPU with nobody watching, which ADR 0016 rules out.
 ///
 /// The heuristic looks only at the foreground window rather than enumerating
@@ -318,14 +303,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn progman_exists_and_is_named_correctly() {
-        let hwnd = progman().expect("Progman should exist while explorer runs");
-        assert_eq!(class_of(hwnd), "Progman");
-    }
-
-    #[test]
-    fn a_desktop_parent_is_always_found() {
-        // Worst case this falls back to Progman, so it must never be None.
-        assert!(desktop_parent().is_some());
+    fn the_work_area_is_a_real_rectangle() {
+        // occluded() compares against this, and a zero rect would make every
+        // window look like it covers the desktop.
+        let area = work_area();
+        assert!(area.right > area.left && area.bottom > area.top);
     }
 }
