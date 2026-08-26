@@ -30,7 +30,44 @@ const HOTKEY_CODE: Code = Code::Space;
 
 #[tauri::command]
 fn list_targets() -> Vec<targets::LaunchTarget> {
-    targets::scan()
+    // Dropped-in targets sit outside the two scanned sources, so they have to be
+    // merged back in here or they would exist in zones.json and nowhere on screen.
+    targets::merge(targets::scan(), targets::from_paths(&zones::load().added))
+}
+
+/// Records paths the user dragged in from Explorer as launch targets.
+///
+/// Adding a target means storing its path, nothing else: no copy into the
+/// desktop folder, no move, no rename (ADR 0004). Returns the refreshed target
+/// list so the caller does not have to ask twice.
+#[tauri::command]
+fn add_targets(paths: Vec<String>) -> Result<Vec<targets::LaunchTarget>, String> {
+    let mut stored = zones::load();
+    for path in paths {
+        if !stored.added.contains(&path) {
+            stored.added.push(path);
+        }
+    }
+    zones::save(&stored)?;
+    Ok(list_targets())
+}
+
+/// Undoes an add. Only dropped-in targets can be removed, because only they were
+/// ever added — a scanned one would reappear on the next scan.
+///
+/// Without this a mis-drop could only be undone by deleting the user's actual
+/// file, which is precisely what ADR 0004 exists to prevent. Its zone membership
+/// and pin go with it, or they would linger as entries pointing at nothing.
+#[tauri::command]
+fn remove_target(path: String) -> Result<Vec<targets::LaunchTarget>, String> {
+    let mut stored = zones::load();
+    stored.added.retain(|p| p != &path);
+    stored.pinned.retain(|p| p != &path);
+    for zone in &mut stored.zones {
+        zone.items.retain(|p| p != &path);
+    }
+    zones::save(&stored)?;
+    Ok(list_targets())
 }
 
 /// Hands the path to the shell, which resolves `.lnk` files and picks the right
@@ -186,7 +223,12 @@ fn read_zones() -> zones::Zones {
 }
 
 #[tauri::command]
-fn write_zones(value: zones::Zones) -> Result<(), String> {
+fn write_zones(mut value: zones::Zones) -> Result<(), String> {
+    // The webview edits zones and pins and knows nothing about `added`, so it
+    // sends the field back missing every time. Taking it from disk instead of
+    // from the round trip is what stops the first zone edit after a drop from
+    // erasing the dropped target.
+    value.added = zones::load().added;
     zones::save(&value)
 }
 
@@ -201,7 +243,10 @@ async fn run_tidy() -> Result<zones::Zones, String> {
         return Err("还没有填 API key".into());
     }
 
-    let found = targets::scan();
+    // The merged list, not a bare scan: a target the user dropped in is a target
+    // like any other, and leaving it out would mean a tidy quietly refuses to
+    // file the things they added by hand.
+    let found = list_targets();
     let names: Vec<String> = found.iter().map(|t| t.name.clone()).collect();
     let name_to_path: HashMap<String, String> = found
         .iter()
@@ -226,6 +271,7 @@ async fn run_tidy() -> Result<zones::Zones, String> {
             // Nothing is pinned on a first run, but carrying it through means a
             // rebuilt zone set never silently drops the user's marks.
             pinned: existing.pinned.clone(),
+            added: existing.added.clone(),
         };
         zones::save(&built)?;
         return Ok(built);
@@ -268,6 +314,8 @@ pub fn run() {
         .manage(theme::ThemeCache::default())
         .invoke_handler(tauri::generate_handler![
             list_targets,
+            add_targets,
+            remove_target,
             launch,
             reveal,
             icons,

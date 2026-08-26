@@ -6,7 +6,7 @@ import { startBackground, type EffectName, type Scene } from "./background";
 type LaunchTarget = {
   name: string;
   path: string;
-  source: "startmenu" | "desktop";
+  source: "startmenu" | "desktop" | "added";
 };
 
 type StoredZone = { name: string; items: string[] };
@@ -101,6 +101,13 @@ function iconStyle(node: HTMLElement, target: LaunchTarget): void {
   node.textContent = url ? "" : [...target.name][0]?.toUpperCase() ?? "?";
 }
 
+/** Where a launch target came from, in the user's words. */
+function sourceName(t: LaunchTarget): string {
+  if (t.source === "desktop") return "桌面";
+  if (t.source === "added") return "手动添加";
+  return "开始菜单";
+}
+
 /** Everything we can say about a target without opening it. */
 function kindOf(t: LaunchTarget): string {
   const dot = t.name.lastIndexOf(".");
@@ -128,7 +135,7 @@ function paintHero(): void {
   heroMetaEl.textContent = [
     pinned.has(t.path) ? "已固定" : null,
     zoneOf(t),
-    t.source === "desktop" ? "桌面" : "开始菜单",
+    sourceName(t),
     kindOf(t),
   ]
     .filter(Boolean)
@@ -168,6 +175,12 @@ function openCtx(t: LaunchTarget, x: number, y: number): void {
     item("打开所在文件夹", () => void revealIn(t)),
     item("复制路径", () => void copyPath(t)),
   ];
+
+  // Only dropped-in targets can be removed: a scanned one would come straight
+  // back on the next scan. "移除" and not "删除" — the file is not touched.
+  if (t.source === "added") {
+    nodes.push(item("移除启动项", () => void removeTarget(t)));
+  }
 
   // Listed flat rather than behind a submenu: with a handful of zones the extra
   // rows cost less than a hover-to-open nested menu would.
@@ -263,20 +276,10 @@ function paintRail(): void {
         openCtx(t, e.clientX, e.clientY);
       });
 
-      // ponytail: tiles can be dragged onto zone tabs, but files dragged in from
-      // Explorer are not accepted at all — and because the desktop surface covers
-      // the real icons, Windows will not pass that drop through to the desktop
-      // underneath. So dropping a file "on the desktop" silently fails, which is
-      // a capability ADR 0015 knowingly took away. Deciding what a drop should do
-      // is a product question, not a technical one: copy to the Desktop folder
-      // (safe, but leaves duplicates), reproduce Windows' move-or-copy semantics
-      // (expected, but deletes originals and wants IFileOperation for conflicts
-      // and undo), or add the file as a launch target and touch no files at all
-      // (coherent with ADR 0004, but does not put anything on the desktop).
-      // Deferred until real use shows whether the gap is actually felt.
-      //
       // A private MIME type, so a tile dragged out of the window is not mistaken
-      // for text by whatever it lands on.
+      // for text by whatever it lands on. Files dragged *in* from Explorer are
+      // handled by `acceptDrops`, which adds them as launch targets without
+      // touching the files themselves.
       node.draggable = true;
       node.addEventListener("dragstart", (e) => {
         e.dataTransfer?.setData("application/x-deskmind-target", t.path);
@@ -346,7 +349,9 @@ function paintResults(): void {
 
       const src = document.createElement("span");
       src.className = "ressrc";
-      src.textContent = t.source === "desktop" ? "桌面" : "";
+      // The rail row is tight, so only the two non-default provenances earn a
+      // label there; 开始菜单 is what a target is unless told otherwise.
+      src.textContent = t.source === "startmenu" ? "" : sourceName(t);
 
       row.append(ico, name, src);
       return row;
@@ -1209,6 +1214,59 @@ function openFirst(): void {
 fNextEl.addEventListener("click", () => void nextStep());
 fSkipEl.addEventListener("click", () => void closeFirst());
 
+/**
+ * A file dragged in from Explorer becomes a launch target, and nothing else.
+ *
+ * The other reading — "file it into this zone" — is a file operation wearing an
+ * organisation costume, and ADR 0004 says deskmind never moves, renames or
+ * deletes a user's files. So the drop records a path. The file stays where the
+ * user put it.
+ *
+ * Dropping while a zone tab is open also places the new targets in that zone,
+ * which is the only reason to have that tab open while dragging. That is a
+ * membership change, not a file one.
+ */
+async function addTargets(paths: string[]): Promise<void> {
+  const before = new Set(all.map((t) => t.path));
+  try {
+    all = await invoke<LaunchTarget[]>("add_targets", { paths });
+  } catch (err) {
+    toast("添加启动项失败", String(err));
+    return;
+  }
+
+  // What actually landed, not what was dropped: paths already known and paths
+  // that no longer resolve never become targets.
+  const fresh = all.filter((t) => !before.has(t.path));
+  paint();
+  if (fresh.length === 0) {
+    toast("这些启动项已经在了");
+    return;
+  }
+
+  // Deliberately not filed into the open zone: adding and filing are separate
+  // decisions, and the tab that happens to be open is a weak guess at the second
+  // one. Dragging the new tile onto a zone tab already does that, explicitly.
+  toast(`已添加 ${fresh.length} 个启动项`, "只记路径，文件没有移动", {
+    label: "撤销",
+    act: () => void Promise.all(fresh.map((t) => removeTarget(t))),
+  });
+  void loadIcons();
+}
+
+/** Forgets a dropped-in target. The file it points at is left alone. */
+async function removeTarget(t: LaunchTarget): Promise<void> {
+  try {
+    all = await invoke<LaunchTarget[]>("remove_target", { path: t.path });
+  } catch (err) {
+    toast("移除失败", String(err));
+    return;
+  }
+  pinned.delete(t.path);
+  await loadZones();
+  paint();
+}
+
 async function load(): Promise<void> {
   tickClock();
   setInterval(tickClock, 20_000);
@@ -1224,6 +1282,11 @@ async function load(): Promise<void> {
     await loadZones();
     paint();
     void loadIcons();
+    void win.onDragDropEvent((e) => {
+      if (e.payload.type === "drop" && e.payload.paths.length > 0) {
+        void addTargets(e.payload.paths);
+      }
+    });
 
     // Both surfaces render this page, so first run has to pick one or it plays
     // twice. The desktop surface is the one that is already on screen.
