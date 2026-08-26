@@ -83,8 +83,14 @@ deskmind 常驻桌面，功耗特性与网页项目完全不同。CSS 动画由�
 
 降级路径完整保留：捕获不可用或抛错时 `hasUi` 归零，着色器自动退回程序化合成。这也是为什么那段代码没有删。
 
+## 地基假设已验证
+
+**WebGL 在挂到桌面层（`SetParent` 到 WorkerW/Progman 之下）的窗口里能拿到硬件加速上下文。** S4 spike 在桌面层窗口里读 `WEBGL_debug_renderer_info`，报的是真实 GPU 而非 SwiftShader，全屏着色器帧率正常。见 `spikes/s4-webgl/FINDINGS.md`。
+
+一台机器上成立不等于所有机器上成立——驱动、远程桌面、虚拟机都可能把上下文打回软件渲染。所以 `src/background.ts` 的 `reportRenderer()` 在每次启动时读一次同一个值，掉进软件渲染就报 `console.error`，并留在 `window.__dmRenderer` 上。这条线一旦断了要立刻知道，而不是等到用户说「机器有点烫」。
+
+同一个 spike 还发现浏览器不会替我们省电：被完全遮挡时 `requestAnimationFrame` 照样满帧。遮挡检测因此落在 `desktop::occluded()`。
+
 ## 下一步
 
-先验一件事：**WebGL 能否在挂到桌面层（`SetParent` 到 WorkerW/Progman 之下）的窗口里拿到硬件加速上下文。** 整套方案压在这个假设上，而它从未被验证——若掉进软件渲染，功耗会直接击穿上面的硬线。
-
-在这个数据出来之前，讨论玻璃的折射率是空谈。
+**拿真实数字量功耗**：空闲可见时 GPU 占用 1-2% 以内，被完全遮挡时 0%。遮挡检测已经实现，但那条硬线从未被实测过。

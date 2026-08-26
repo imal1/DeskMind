@@ -314,6 +314,37 @@ type Layer = {
 };
 
 /**
+ * Names the GPU the context actually landed on, once per session.
+ *
+ * ADR 0016 puts the whole rendering plan on one assumption: that a window
+ * reparented under WorkerW still gets a hardware context. If it silently falls
+ * back to SwiftShader the power ceiling is unreachable and no amount of tuning
+ * the glass will save it — so the fallback has to be loud rather than something
+ * discovered later as "it feels warm". Read `window.__dmRenderer` in devtools on
+ * the desktop-layer window to check it.
+ */
+let reported = false;
+function reportRenderer(gl: WebGL2RenderingContext): void {
+  if (reported) return;
+  reported = true;
+  const info = gl.getExtension("WEBGL_debug_renderer_info");
+  const renderer = info
+    ? String(gl.getParameter(info.UNMASKED_RENDERER_WEBGL))
+    : String(gl.getParameter(gl.RENDERER));
+  (window as unknown as { __dmRenderer: string }).__dmRenderer = renderer;
+  if (isSoftware(renderer)) {
+    console.error(`WebGL 掉进软件渲染：${renderer}。功耗达不到 ADR 0016 的硬线。`);
+  } else {
+    console.info(`WebGL 渲染器：${renderer}`);
+  }
+}
+
+/** The software rasterisers a browser falls back to when no GPU is available. */
+function isSoftware(renderer: string): boolean {
+  return /swiftshader|llvmpipe|softwarerasterizer|basic render|microsoft basic/i.test(renderer);
+}
+
+/**
  * One fullscreen quad running the shared shader.
  *
  * Two of these exist. The backdrop layer sits under the interface; the glass
@@ -339,6 +370,8 @@ function makeLayer(zIndex: number, glassOnly: boolean, after: Element): Layer | 
     canvas.remove();
     return null;
   }
+
+  reportRenderer(gl);
 
   let program: WebGLProgram;
   try {
