@@ -493,6 +493,16 @@ export function startBackground(watchOcclusion: boolean): Scene | null {
   const CAPTURE_INTERVAL = 1000 / 30;
   let lastCapture = -1e9;
 
+  /**
+   * Idle frame budget. The fog drifts at 0.014 radians a second and the highlight
+   * bands at 0.25 — at that speed 15 frames a second is not a compromise, it is
+   * more than the motion can use. Measured on a 3440x1440 screen with
+   * `scripts/measure-gpu.ps1`: 23.5% of the GPU at the monitor's rate, 3.2% at
+   * 30, 1.8% here — which is the first number inside ADR 0016's 1-2%.
+   */
+  const IDLE_FRAME = 1000 / 15;
+  let lastFrame = -1e9;
+
   function refreshUi(now: number): void {
     if (!capture) return;
     if (now - lastCapture < CAPTURE_INTERVAL) return;
@@ -530,16 +540,26 @@ export function startBackground(watchOcclusion: boolean): Scene | null {
       running = false;
       return;
     }
+    requestAnimationFrame(draw);
+
+    // With no panel up, nothing on screen moves but the atmosphere, and it drifts
+    // slowly enough to live on a frame budget (see IDLE_FRAME). A millisecond of
+    // slack because rAF lands a hair early as often as late — without it every
+    // other slot is missed and the budget halves itself.
+    const idle = target.length === 0 && amount < 0.01;
+    if (idle && now - lastFrame < IDLE_FRAME - 1) return;
+    lastFrame = now;
 
     const want = target.length > 0 ? 1 : 0;
     // Quick: the panel it belongs to fades in over 200ms, and glass arriving
     // later than its own panel reads as lag.
     amount += (want - amount) * 0.34;
     if (Math.abs(want - amount) < 0.005) amount = want;
+    const showingGlass = amount > 0.01;
 
     // Only while there is glass to draw, and only once the panel rectangles are
     // known — a capture with no panel on screen would be pure waste.
-    if (target.length > 0 && amount > 0.01) refreshUi(now);
+    if (target.length > 0 && showingGlass) refreshUi(now);
 
     for (const layer of layers) {
       const { canvas, gl, u } = layer;
@@ -551,7 +571,12 @@ export function startBackground(watchOcclusion: boolean): Scene | null {
       // upscale is its own source of stepped edges. Capped at 2 so a 4K ultrawide
       // does not quadruple the fragment count for nothing.
       const dpr = Math.min(window.devicePixelRatio || 1, 2);
-      const scale = isGlass ? dpr : amount > 0.01 ? 1 : 0.5;
+      // With no panel up the glass layer has nothing to draw but transparency,
+      // and drawing that at device pixels was a full 3440x1440 pass per frame for
+      // an image nobody can see. Collapsing the canvas to a pixel is what makes
+      // it free: the resize clears it, and one stretched transparent pixel looks
+      // exactly like the fullscreen transparent one it replaces.
+      const scale = isGlass ? (showingGlass ? dpr : 0) : showingGlass ? 1 : 0.5;
       const w = Math.max(1, Math.round(canvas.clientWidth * scale));
       const h = Math.max(1, Math.round(canvas.clientHeight * scale));
       if (canvas.width !== w || canvas.height !== h) {
@@ -594,7 +619,6 @@ export function startBackground(watchOcclusion: boolean): Scene | null {
       gl.clear(gl.COLOR_BUFFER_BIT);
       gl.drawArrays(gl.TRIANGLES, 0, 3);
     }
-    requestAnimationFrame(draw);
   }
 
   function resume(): void {

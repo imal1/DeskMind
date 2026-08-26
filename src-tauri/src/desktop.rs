@@ -235,7 +235,7 @@ fn work_area() -> Rect {
     rect
 }
 
-pub fn occluded() -> Occlusion {
+pub fn occluded(ours: Option<Hwnd>) -> Occlusion {
     let area = work_area();
     let mut out = Occlusion {
         occluded: false,
@@ -253,6 +253,19 @@ pub fn occluded() -> Occlusion {
         }
         if IsIconic(front) != 0 {
             out.why = "前台窗口已最小化".into();
+            return out;
+        }
+        // Ourselves. The surface is the size of the screen, so without this the
+        // rectangle test says we are covered — by us — and the scene freezes
+        // while the user is looking straight at it. Happens after every search:
+        // `grab_focus` puts us in the foreground and we stay there.
+        //
+        // The cost is a window that covers us without taking the foreground while
+        // we hold it — a topmost overlay right after a search. That reads as
+        // visible and we keep drawing. Rare, and the wrong answer is the cheap
+        // one: a few frames nobody sees, against a frozen desktop.
+        if ours == Some(front) {
+            out.why = "前台是我们自己".into();
             return out;
         }
 
@@ -308,5 +321,22 @@ mod tests {
         // window look like it covers the desktop.
         let area = work_area();
         assert!(area.right > area.left && area.bottom > area.top);
+    }
+
+    #[test]
+    fn we_are_never_our_own_occluder() {
+        // The surface is the size of the screen, so the rectangle test says yes
+        // when the foreground window is us — and the scene stops with the user
+        // looking straight at it.
+        //
+        // Only meaningful while something actually covers the work area: that is
+        // the case the rectangle test answers "occluded" for, and calling that
+        // same window ours has to flip the answer back.
+        if !occluded(None).occluded {
+            return;
+        }
+        let front = unsafe { GetForegroundWindow() };
+        let probe = occluded(Some(front));
+        assert!(!probe.occluded, "{}", probe.why);
     }
 }
