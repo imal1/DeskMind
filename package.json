@@ -4,9 +4,9 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "tsc --noEmit && vite build",
-    "preview": "vite preview",
+    "dev": "bun --bun vite",
+    "build": "tsc --noEmit && bun --bun vite build",
+    "preview": "bun --bun vite preview",
     "tauri": "tauri"
   },
   "dependencies": {
