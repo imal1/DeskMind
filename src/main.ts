@@ -6,25 +6,13 @@ import { startBackground, type EffectName, type Scene } from "./background";
 type LaunchTarget = {
   name: string;
   path: string;
-  source: "startmenu" | "desktop";
+  source: "startmenu" | "desktop" | "added";
 };
 
 type StoredZone = { name: string; items: string[] };
 type Zones = { zones: StoredZone[]; pinned: string[] };
 
 const win = getCurrentWindow();
-
-/**
- * The same page renders both surfaces (ADR 0015). The desktop one is parented
- * into the desktop layer and must never hide — hiding it would leave the user
- * without a desktop. The launchpad one is a normal window summoned by hotkey.
- */
-const isDesktop = win.label === "desktop";
-
-/** Hides the launchpad. On the desktop surface there is nothing to hide. */
-async function dismiss(): Promise<void> {
-  if (!isDesktop) await win.hide();
-}
 
 const el = <T extends HTMLElement>(id: string): T =>
   document.getElementById(id) as T;
@@ -101,6 +89,13 @@ function iconStyle(node: HTMLElement, target: LaunchTarget): void {
   node.textContent = url ? "" : [...target.name][0]?.toUpperCase() ?? "?";
 }
 
+/** Where a launch target came from, in the user's words. */
+function sourceName(t: LaunchTarget): string {
+  if (t.source === "desktop") return "桌面";
+  if (t.source === "added") return "手动添加";
+  return "开始菜单";
+}
+
 /** Everything we can say about a target without opening it. */
 function kindOf(t: LaunchTarget): string {
   const dot = t.name.lastIndexOf(".");
@@ -128,7 +123,7 @@ function paintHero(): void {
   heroMetaEl.textContent = [
     pinned.has(t.path) ? "已固定" : null,
     zoneOf(t),
-    t.source === "desktop" ? "桌面" : "开始菜单",
+    sourceName(t),
     kindOf(t),
   ]
     .filter(Boolean)
@@ -144,52 +139,113 @@ function closeCtx(): void {
   refreshGlass();
 }
 
+function menuItem(label: string, act: () => void): HTMLButtonElement {
+  const b = document.createElement("button");
+  b.className = "ctxitem";
+  b.textContent = label;
+  b.addEventListener("click", () => {
+    closeCtx();
+    act();
+  });
+  return b;
+}
+
+function menuSep(): HTMLElement {
+  const sep = document.createElement("div");
+  sep.className = "ctxsep";
+  return sep;
+}
+
+/** Shows the one menu element at (x, y), nudged back inside the viewport. */
+function openMenu(nodes: HTMLElement[], x: number, y: number): void {
+  ctxEl.replaceChildren(...nodes);
+
+  // Show first so the measured size is real, then nudge.
+  ctxEl.classList.remove("hide");
+  const box = ctxEl.getBoundingClientRect();
+  ctxEl.style.left = `${Math.min(x, window.innerWidth - box.width - 12)}px`;
+  ctxEl.style.top = `${Math.min(y, window.innerHeight - box.height - 12)}px`;
+  refreshGlass();
+}
+
 function openCtx(t: LaunchTarget, x: number, y: number): void {
   const head = document.createElement("div");
   head.id = "ctxhead";
   head.textContent = t.name;
 
-  const item = (label: string, act: () => void): HTMLButtonElement => {
-    const b = document.createElement("button");
-    b.className = "ctxitem";
-    b.textContent = label;
-    b.addEventListener("click", () => {
-      closeCtx();
-      act();
-    });
-    return b;
-  };
-
   // No 打开 here: the detail panel has a button for it and a tile opens on
   // double-click, so a third way would just be noise.
   const nodes: HTMLElement[] = [
     head,
-    item(pinned.has(t.path) ? "取消固定" : "固定", () => togglePin(t)),
-    item("打开所在文件夹", () => void revealIn(t)),
-    item("复制路径", () => void copyPath(t)),
+    menuItem(pinned.has(t.path) ? "取消固定" : "固定", () => togglePin(t)),
+    menuItem("打开所在文件夹", () => void revealIn(t)),
+    menuItem("复制路径", () => void copyPath(t)),
   ];
+
+  // Only dropped-in targets can be removed: a scanned one would come straight
+  // back on the next scan. "移除" and not "删除" — the file is not touched.
+  if (t.source === "added") {
+    nodes.push(menuItem("移除启动项", () => void removeTarget(t)));
+  }
 
   // Listed flat rather than behind a submenu: with a handful of zones the extra
   // rows cost less than a hover-to-open nested menu would.
   const current = zoneOf(t);
   const elsewhere = stored.filter((z) => z.name !== current);
   if (elsewhere.length > 0) {
-    const sep = document.createElement("div");
-    sep.className = "ctxsep";
-    nodes.push(sep);
+    nodes.push(menuSep());
     for (const z of elsewhere) {
-      nodes.push(item(`移到「${z.name}」`, () => moveTo(t, z.name)));
+      nodes.push(menuItem(`移到「${z.name}」`, () => moveTo(t, z.name)));
     }
   }
 
-  ctxEl.replaceChildren(...nodes);
+  openMenu(nodes, x, y);
+}
 
-  // Show first so the measured size is real, then nudge back inside the viewport.
-  ctxEl.classList.remove("hide");
-  const box = ctxEl.getBoundingClientRect();
-  ctxEl.style.left = `${Math.min(x, window.innerWidth - box.width - 12)}px`;
-  ctxEl.style.top = `${Math.min(y, window.innerHeight - box.height - 12)}px`;
-  refreshGlass();
+/**
+ * The menu for empty stage, standing in for the desktop's own.
+ *
+ * ADR 0015 accepts that the desktop surface covers the real icons, on the
+ * condition that deskmind takes over what they were for. Right-clicking bare
+ * desktop was the part still missing: the stage swallowed the event and offered
+ * nothing back, so refresh, display settings, personalise and — worst — any way
+ * out short of hunting for the tray icon were simply gone.
+ *
+ * 新建 is deliberately absent. It writes a file into the desktop folder, and
+ * whether deskmind may do that is a decision of its own, not a gap to plug here.
+ */
+function openStageMenu(x: number, y: number): void {
+  openMenu(
+    [
+      menuItem("刷新", () => void reloadTargets()),
+      menuSep(),
+      menuItem("整理", () => void doTidy()),
+      menuItem("设置", () => void openSettings()),
+      menuSep(),
+      // Handed to the shell exactly like a launch target: ms-settings: is a URI
+      // the shell already knows how to open, so this needs no new command.
+      menuItem("显示设置", () => void invoke("launch", { path: "ms-settings:display" })),
+      menuItem("个性化", () => void invoke("launch", { path: "ms-settings:personalization" })),
+      menuSep(),
+      menuItem("退出 deskmind", () => void invoke("quit")),
+    ],
+    x,
+    y,
+  );
+}
+
+/** Re-reads launch targets and zones from disk. What 刷新 means here. */
+async function reloadTargets(): Promise<void> {
+  try {
+    all = await invoke<LaunchTarget[]>("list_targets");
+    await loadZones();
+  } catch (err) {
+    toast("刷新失败", String(err));
+    return;
+  }
+  paint();
+  void loadIcons();
+  toast(`已刷新 ${all.length} 个启动项`);
 }
 
 // ---------- rail ----------
@@ -263,20 +319,10 @@ function paintRail(): void {
         openCtx(t, e.clientX, e.clientY);
       });
 
-      // ponytail: tiles can be dragged onto zone tabs, but files dragged in from
-      // Explorer are not accepted at all — and because the desktop surface covers
-      // the real icons, Windows will not pass that drop through to the desktop
-      // underneath. So dropping a file "on the desktop" silently fails, which is
-      // a capability ADR 0015 knowingly took away. Deciding what a drop should do
-      // is a product question, not a technical one: copy to the Desktop folder
-      // (safe, but leaves duplicates), reproduce Windows' move-or-copy semantics
-      // (expected, but deletes originals and wants IFileOperation for conflicts
-      // and undo), or add the file as a launch target and touch no files at all
-      // (coherent with ADR 0004, but does not put anything on the desktop).
-      // Deferred until real use shows whether the gap is actually felt.
-      //
       // A private MIME type, so a tile dragged out of the window is not mistaken
-      // for text by whatever it lands on.
+      // for text by whatever it lands on. Files dragged *in* from Explorer are
+      // handled by `acceptDrops`, which adds them as launch targets without
+      // touching the files themselves.
       node.draggable = true;
       node.addEventListener("dragstart", (e) => {
         e.dataTransfer?.setData("application/x-deskmind-target", t.path);
@@ -346,7 +392,9 @@ function paintResults(): void {
 
       const src = document.createElement("span");
       src.className = "ressrc";
-      src.textContent = t.source === "desktop" ? "桌面" : "";
+      // The rail row is tight, so only the two non-default provenances earn a
+      // label there; 开始菜单 is what a target is unless told otherwise.
+      src.textContent = t.source === "startmenu" ? "" : sourceName(t);
 
       row.append(ico, name, src);
       return row;
@@ -617,6 +665,9 @@ function openSearch(seed = ""): void {
   scrimEl.classList.remove("hide");
   searchEl.classList.remove("hide");
   paintResults();
+  // WS_EX_NOACTIVATE means a click never brought the keyboard with it, so the
+  // surface has to ask for it before a DOM focus() can mean anything.
+  void invoke("grab_focus");
   queryEl.focus();
   // Straight away: panels fade in without moving, so the rectangle is already
   // its resting position on the first frame.
@@ -633,7 +684,6 @@ function closeSearch(): void {
 // ---------- actions ----------
 
 async function revealIn(target: LaunchTarget): Promise<void> {
-  await dismiss();
   try {
     await invoke("reveal", { path: target.path });
   } catch (err) {
@@ -650,10 +700,8 @@ async function copyPath(target: LaunchTarget): Promise<void> {
 }
 
 async function run(target: LaunchTarget): Promise<void> {
-  // Get out of the way first so the launched app is never stuck behind us. On the
-  // desktop surface there is nothing to get out of the way — the app opens on top
-  // of us the way it would over any desktop.
-  await dismiss();
+  // Nothing to get out of the way: we are the desktop, so the launched app opens
+  // on top of us the way it would over any desktop.
   try {
     await invoke("launch", { path: target.path });
   } catch (err) {
@@ -800,7 +848,8 @@ window.addEventListener("keydown", (e) => {
     if (ctxOpen) closeCtx();
     else if (settingsShowing()) closeSettings();
     else if (searchOpen) closeSearch();
-    else void dismiss();
+    // Nothing left to dismiss to — Esc on the bare desktop does nothing, the
+    // same as it does on the real one.
     return;
   }
   if (ctxOpen) closeCtx();
@@ -902,17 +951,20 @@ window.addEventListener("mousedown", (e) => {
   const inMenu = ctxEl.contains(e.target as Node);
   if (!inMenu) closeCtx();
 
-  // Docking costs the desktop surface its normal activation path, so arriving
-  // clicks have to take keyboard focus back explicitly (ADR 0015).
-  //
-  // Only when we do not already hold it. Re-grabbing mid-interaction moves focus
-  // between mousedown and click and the click is never delivered — that is what
-  // made both the context menu items and the tiles unresponsive. Once focus is
-  // ours there is nothing to take.
-  if (isDesktop && !document.hasFocus()) void invoke("grab_focus");
 });
-// The stage has no native menu of its own to offer.
-window.addEventListener("contextmenu", (e) => e.preventDefault());
+// The browser menu never helps here, so it always goes. Bare stage gets the
+// stand-in for the desktop menu it is covering; anything with its own handler
+// (tiles) or its own affordances (panels, controls) is left alone.
+//
+// Desktop surface only. The launchpad covers nothing — Esc puts the real
+// desktop back — so there is nothing there for a stand-in to stand in for.
+window.addEventListener("contextmenu", (e) => {
+  e.preventDefault();
+  const onControl = (e.target as HTMLElement).closest(
+    ".tile, .tab, .pill, .panel, #hero, #ctx, .resrow, #left, #right, button, input",
+  );
+  if (!onControl) openStageMenu(e.clientX, e.clientY);
+});
 el("left").addEventListener("click", () => {
   railEl.scrollLeft -= 560;
 });
@@ -929,30 +981,6 @@ function tickClock(): void {
   ).padStart(2, "0")}`;
 }
 
-// Every summon should feel fresh: search closed, first tile selected, focus here
-// so typing works immediately after the hotkey.
-void win.onFocusChanged(({ payload: focused }) => {
-  if (!focused) {
-    // ADR 0014's hide-on-blur applies to the launchpad only: it is fullscreen and
-    // always-on-top, so any path leaving it visible without focus would bury the
-    // desktop. The desktop surface is neither, and hiding it would remove the
-    // desktop itself.
-    // Onboarding and settings are exempt — someone alt-tabbing to fetch an API
-    // key must not lose the panel they were filling in.
-    if (!isDesktop && !firstOpen && !settingsShowing()) void win.hide();
-    return;
-  }
-  closeSearch();
-  closeSettings();
-  closeCtx();
-  tile = 0;
-  tickClock();
-  paint();
-  // The wallpaper may have changed while we were hidden. Re-reading is cheap:
-  // the registry lookup plus a stat, and the Rust side only re-decodes when the
-  // path or its modified time moved.
-  void loadTheme();
-});
 
 type Theme = { path: string | null; accent: string; brightness: number };
 
@@ -1188,9 +1216,6 @@ async function closeFirst(): Promise<void> {
   firstOpen = false;
   firstEl.classList.add("hide");
   scrimEl.classList.add("hide");
-  // The window is fullscreen and always-on-top, so finishing onboarding without
-  // hiding it leaves a sheet covering every other application.
-  await win.hide();
   try {
     await invoke("finish_onboarding");
   } catch (err) {
@@ -1209,6 +1234,59 @@ function openFirst(): void {
 fNextEl.addEventListener("click", () => void nextStep());
 fSkipEl.addEventListener("click", () => void closeFirst());
 
+/**
+ * A file dragged in from Explorer becomes a launch target, and nothing else.
+ *
+ * The other reading — "file it into this zone" — is a file operation wearing an
+ * organisation costume, and ADR 0004 says deskmind never moves, renames or
+ * deletes a user's files. So the drop records a path. The file stays where the
+ * user put it.
+ *
+ * Dropping while a zone tab is open also places the new targets in that zone,
+ * which is the only reason to have that tab open while dragging. That is a
+ * membership change, not a file one.
+ */
+async function addTargets(paths: string[]): Promise<void> {
+  const before = new Set(all.map((t) => t.path));
+  try {
+    all = await invoke<LaunchTarget[]>("add_targets", { paths });
+  } catch (err) {
+    toast("添加启动项失败", String(err));
+    return;
+  }
+
+  // What actually landed, not what was dropped: paths already known and paths
+  // that no longer resolve never become targets.
+  const fresh = all.filter((t) => !before.has(t.path));
+  paint();
+  if (fresh.length === 0) {
+    toast("这些启动项已经在了");
+    return;
+  }
+
+  // Deliberately not filed into the open zone: adding and filing are separate
+  // decisions, and the tab that happens to be open is a weak guess at the second
+  // one. Dragging the new tile onto a zone tab already does that, explicitly.
+  toast(`已添加 ${fresh.length} 个启动项`, "只记路径，文件没有移动", {
+    label: "撤销",
+    act: () => void Promise.all(fresh.map((t) => removeTarget(t))),
+  });
+  void loadIcons();
+}
+
+/** Forgets a dropped-in target. The file it points at is left alone. */
+async function removeTarget(t: LaunchTarget): Promise<void> {
+  try {
+    all = await invoke<LaunchTarget[]>("remove_target", { path: t.path });
+  } catch (err) {
+    toast("移除失败", String(err));
+    return;
+  }
+  pinned.delete(t.path);
+  await loadZones();
+  paint();
+}
+
 async function load(): Promise<void> {
   tickClock();
   setInterval(tickClock, 20_000);
@@ -1216,7 +1294,7 @@ async function load(): Promise<void> {
     // Both surfaces. The search panel — the one the glass is built for — is seen
     // far more often on the launchpad than on the desktop, and a hidden window
     // is not painted, so the launchpad's loop costs nothing while it is away.
-    background = startBackground(isDesktop);
+    background = startBackground(true);
     void loadTheme();
     void invoke<Settings>("read_settings").then((s) => applyEffect(s.effect));
 
@@ -1224,15 +1302,18 @@ async function load(): Promise<void> {
     await loadZones();
     paint();
     void loadIcons();
-
-    // Both surfaces render this page, so first run has to pick one or it plays
-    // twice. The desktop surface is the one that is already on screen.
-    if (isDesktop) {
-      const s = await invoke<{ onboarded: boolean }>("status");
-      if (!s.onboarded) {
-        openFirst();
-        await win.setFocus();
+    void win.onDragDropEvent((e) => {
+      if (e.payload.type === "drop" && e.payload.paths.length > 0) {
+        void addTargets(e.payload.paths);
       }
+    });
+
+    const s = await invoke<{ onboarded: boolean }>("status");
+    if (!s.onboarded) {
+      openFirst();
+      // First run is the one moment the surface needs the keyboard before the
+      // user has clicked anything.
+      void invoke("grab_focus");
     }
   } catch (err) {
     railMetaEl.textContent = "扫描失败";

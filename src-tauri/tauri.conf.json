@@ -4,9 +4,9 @@
   "version": "0.1.0",
   "identifier": "com.deskmind.launchpad",
   "build": {
-    "beforeDevCommand": "npm run dev",
+    "beforeDevCommand": "bun run dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "npm run build",
+    "beforeBuildCommand": "bun run build",
     "frontendDist": "../dist"
   },
   "app": {
@@ -25,37 +25,28 @@
         "visible": false,
         "shadow": false,
         "focus": false
-      },
-      {
-        "label": "launchpad",
-        "title": "deskmind",
-        "fullscreen": true,
-        "decorations": false,
-        "transparent": true,
-        "alwaysOnTop": true,
-        "skipTaskbar": true,
-        "resizable": false,
-        "additionalBrowserArgs": "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --enable-blink-features=CanvasDrawElement",
-        "visible": false,
-        "shadow": false
       }
     ],
     "security": {
       "csp": null,
       "assetProtocol": {
         "enable": true,
-        "scope": ["**"]
+        "scope": [
+          "**"
+        ]
       }
     }
   },
   "bundle": {
     "active": true,
-    "targets": ["nsis"],
+    "targets": [
+      "nsis"
+    ],
     "publisher": "imali",
     "copyright": "MIT © 2026 imali",
     "category": "Utility",
-    "shortDescription": "AI 把启动项分好组的 Windows 启动台",
-    "longDescription": "deskmind 常驻桌面，用 AI 把已安装程序和桌面文件分好组。按 Alt+Space 也可随时唤出。",
+    "shortDescription": "AI 把启动项分好组的 Windows 桌面",
+    "longDescription": "deskmind 就是你的桌面，用 AI 把已安装程序和桌面文件分好组。",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -65,7 +56,10 @@
     "windows": {
       "nsis": {
         "installMode": "currentUser",
-        "languages": ["SimpChinese", "English"]
+        "languages": [
+          "SimpChinese",
+          "English"
+        ]
       }
     }
   }

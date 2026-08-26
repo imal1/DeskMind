@@ -27,6 +27,17 @@ pub struct Zones {
     /// user has organised their launch targets. `serde(default)` means a
     /// zones.json written before pinning existed still loads.
     pub pinned: Vec<String>,
+    /// Paths the user dropped in from Explorer, which the two scanned sources
+    /// would never turn up on their own.
+    ///
+    /// A drop **adds a launch target and records its path** — the file itself is
+    /// not moved, copied or renamed, so this stays on the right side of ADR 0004.
+    /// The alternative reading, "file it into the zone", is a file operation
+    /// wearing an organisation costume, and the zone is not a folder.
+    ///
+    /// Owned by the backend: the webview never sends this field back, so
+    /// `write_zones` carries it across rather than trusting the round trip.
+    pub added: Vec<String>,
 }
 
 fn file() -> Option<std::path::PathBuf> {
@@ -80,6 +91,8 @@ pub fn apply(
         // Pins are the user's own marks; a tidy re-files things, it does not
         // decide what matters to them.
         pinned: existing.pinned.clone(),
+        // Same reasoning: a tidy decides zone membership, not what exists.
+        added: existing.added.clone(),
     };
 
     // Anything the model did not place stays where it was.
@@ -114,6 +127,7 @@ mod tests {
                 Zone { name: "游戏".into(), items: vec![r"C:\b.lnk".into()] },
             ],
             pinned: vec![r"C:\a.lnk".into()],
+            added: vec![r"C:\dropped.txt".into()],
         }
     }
 
@@ -153,6 +167,13 @@ mod tests {
         assert_eq!(out.zones.len(), 2, "apply must never create a zone");
         // A was aimed at a zone that does not exist, so it lands nowhere.
         assert!(out.zones.iter().all(|z| !z.items.contains(&r"C:\a.lnk".to_string())));
+    }
+
+    #[test]
+    fn tidy_keeps_dropped_in_targets() {
+        let decision = HashMap::from([("A".to_string(), "游戏".to_string())]);
+        let out = apply(&zones(), &decision, &names());
+        assert_eq!(out.added, vec![r"C:\dropped.txt".to_string()]);
     }
 
     #[test]

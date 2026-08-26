@@ -41,6 +41,22 @@ fn is_junk(name: &str) -> bool {
     JUNK.iter().any(|j| lower.contains(j))
 }
 
+/// What a target is called: a shortcut shows its stem, everything else keeps its
+/// extension. `Foo.lnk` is the program Foo; `notes.txt` is a file whose type the
+/// user reads off the extension.
+fn display_name(path: &Path) -> Option<&str> {
+    let file_name = path.file_name()?.to_str()?;
+    let is_lnk = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("lnk"));
+    if is_lnk {
+        Some(path.file_stem().and_then(|s| s.to_str()).unwrap_or(file_name))
+    } else {
+        Some(file_name)
+    }
+}
+
 fn start_menus() -> Vec<PathBuf> {
     ["ProgramData", "APPDATA"]
         .iter()
@@ -105,14 +121,8 @@ fn collect_desktop(dir: &Path, out: &mut Vec<LaunchTarget>) {
         if file_name.eq_ignore_ascii_case("desktop.ini") {
             continue;
         }
-        let is_lnk = path
-            .extension()
-            .and_then(|e| e.to_str())
-            .is_some_and(|e| e.eq_ignore_ascii_case("lnk"));
-        let name = if is_lnk {
-            path.file_stem().and_then(|s| s.to_str()).unwrap_or(file_name)
-        } else {
-            file_name
+        let Some(name) = display_name(&path) else {
+            continue;
         };
         out.push(LaunchTarget {
             name: name.to_string(),
@@ -120,6 +130,50 @@ fn collect_desktop(dir: &Path, out: &mut Vec<LaunchTarget>) {
             source: "desktop",
         });
     }
+}
+
+/// Turns paths the user dropped in from Explorer into launch targets.
+///
+/// Only the path is kept — deskmind records where the file is and never moves
+/// it (ADR 0004). Paths that no longer resolve are dropped silently rather than
+/// left as tiles that fail on click: the user deleted or moved the file
+/// themselves, and a stale entry is the one outcome they cannot have meant.
+pub fn from_paths(paths: &[String]) -> Vec<LaunchTarget> {
+    paths
+        .iter()
+        .filter_map(|p| {
+            let path = Path::new(p);
+            if !path.exists() {
+                return None;
+            }
+            let name = display_name(path)?;
+            Some(LaunchTarget {
+                name: name.to_string(),
+                path: p.clone(),
+                source: "added",
+            })
+        })
+        .collect()
+}
+
+/// Folds dropped-in targets into a scan, keeping the scan's guarantees.
+///
+/// The scan wins every collision — it knows the real source. Deduping by name as
+/// well as by path preserves the invariant `scan` already holds, that names are
+/// unique: a tidy reasons in names and maps them back to paths one to one, so a
+/// second target with the same name would make one of them unreachable.
+pub fn merge(scanned: Vec<LaunchTarget>, extra: Vec<LaunchTarget>) -> Vec<LaunchTarget> {
+    let mut out = scanned;
+    let mut paths: HashSet<String> = out.iter().map(|t| t.path.to_lowercase()).collect();
+    let mut names: HashSet<String> = out.iter().map(|t| t.name.to_lowercase()).collect();
+    for t in extra {
+        if !paths.insert(t.path.to_lowercase()) || !names.insert(t.name.to_lowercase()) {
+            continue;
+        }
+        out.push(t);
+    }
+    out.sort_by_key(|t| t.name.to_lowercase());
+    out
 }
 
 pub fn scan() -> Vec<LaunchTarget> {
@@ -158,6 +212,41 @@ mod tests {
         assert!(is_junk("Pandoc User's Guide documentation"));
         assert!(!is_junk("Visual Studio Code"));
         assert!(!is_junk("微信"));
+    }
+
+    fn target(name: &str, path: &str) -> LaunchTarget {
+        LaunchTarget { name: name.into(), path: path.into(), source: "added" }
+    }
+
+    #[test]
+    fn merge_keeps_names_unique_so_a_tidy_can_map_them_back() {
+        let scanned = vec![LaunchTarget {
+            name: "Notes".into(),
+            path: r"C:\Menu\Notes.lnk".into(),
+            source: "startmenu",
+        }];
+        let out = merge(
+            scanned,
+            vec![
+                // Same name, different file: the scan wins, this one is dropped.
+                target("Notes", r"D:\other\Notes.lnk"),
+                // Same path in different case: still the same file.
+                target("Menu Notes", r"c:\menu\notes.lnk"),
+                target("Ledger", r"D:\Ledger.xlsx"),
+            ],
+        );
+        let names: Vec<&str> = out.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(names, vec!["Ledger", "Notes"]);
+        assert_eq!(out[1].path, r"C:\Menu\Notes.lnk", "the scan owns the collision");
+    }
+
+    #[test]
+    fn dropped_paths_that_no_longer_exist_are_skipped() {
+        let real = std::env::current_exe().unwrap().to_string_lossy().into_owned();
+        let out = from_paths(&[real.clone(), r"C:\nope\gone.txt".into()]);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].path, real);
+        assert_eq!(out[0].source, "added");
     }
 
     #[test]

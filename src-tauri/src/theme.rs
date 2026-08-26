@@ -111,7 +111,7 @@ fn accent_of(img: &image::RgbImage) -> String {
 /// The colour a photograph votes for is often dark — a bamboo forest gives a
 /// deep olive. The interface uses the accent as a *fill* under near-black text
 /// (active tabs, the primary buttons), so a dark accent turns those into
-/// unreadable smudges. The design fixes lightness at oklch 0.79 for exactly this
+/// unreadable smudges. The design fixes lightness at TARGET below for exactly this
 /// reason; taking the hue from the wallpaper and the lightness from the design is
 /// what keeps both promises.
 fn brighten(r: u8, g: u8, b: u8) -> (u8, u8, u8) {
