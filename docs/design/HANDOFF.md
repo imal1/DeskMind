@@ -7,16 +7,17 @@
 | 元素 | 由谁绘制 | 怎么改 |
 |---|---|---|
 | 壁纸、雾/光带、背景遮罩 | **WebGL 着色器** | `src/background.ts` 里的 GLSL |
-| 面板的折射玻璃（搜索框等） | **WebGL 着色器** | 同上，`RIM` / `bend` / `darkness` 三个数 |
-| 面板的边框、圆角、文字 | CSS | `index.html` |
+| 面板的整个表面：折射、磨砂、压暗、边线、投影（搜索框等） | **WebGL 着色器** | 同上，`RIM` / `bend` / `darkness` / `lod` |
+| 面板的圆角尺寸、内部文字与控件 | CSS | `index.html` |
 | 导航条、标签、按钮、磁贴 | CSS | `index.html`，按 `body[data-effect]` 分三套 |
 | 详情面板、右键菜单、toast | CSS | 同上 |
 
 **关键**：搜索面板背后那层弯曲的壁纸是着色器画的，画在 DOM 之下。所以
 
-- 给面板加**不透明**背景 = 把折射盖死。它的 CSS 底色只有 22%，这是故意的
+- 着色器接管一块面板时，面板**整个表面**都归它：磨砂、压暗、边线、投影都在着色器里。DOM 只留内容。`.panel.glassed` 因此把 `background`、`backdrop-filter`、`border-color`、`box-shadow` 全部归零——这不是遗漏，两套系统各画半块面板正是双层边框和浑浊投影的来源
+- 所以**别给 `.panel.glassed` 加回 CSS 底色或 `backdrop-filter`**，那是直接把折射盖死。要更模糊调 `lod`（1.2 → 5.0），要更暗调 `darkness`（0.16 → 0.54），都在 `src/background.ts`
+- 基础 `.panel` 上的 `backdrop-filter` 只在**纯净**下生效。那个模式着色器不画玻璃，`glassed` 不会挂上去，面板退回自己的 CSS 背景
 - 改面板圆角要**同步**：着色器按 `getBoundingClientRect()` 和 `border-radius` 取矩形，圆角对不上会露出双层边框
-- `backdrop-filter` 在面板上是**开着的**，和左上角分类栏同一档。分工是：**模糊管可读性（内部），折射管材质感（边缘）**。位移能在模糊下存活，被不透明底色一盖就没了——所以底色可以调、但不能调高太多
 
 ## 两条会咬人的规则
 
