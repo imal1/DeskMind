@@ -340,7 +340,8 @@ function reportRenderer(gl: WebGL2RenderingContext): void {
 }
 
 /** The software rasterisers a browser falls back to when no GPU is available. */
-function isSoftware(renderer: string): boolean {
+/** Exported so the settings panel can say the same thing about the same string. */
+export function isSoftware(renderer: string): boolean {
   return /swiftshader|llvmpipe|softwarerasterizer|basic render|microsoft basic/i.test(renderer);
 }
 

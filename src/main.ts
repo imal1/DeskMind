@@ -2,7 +2,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { rank } from "./match";
 import { deskStats, moveInGrid, scatterAt, sinceTidy, tiltAt, type ArrowKey } from "./desk";
-import { startBackground, type EffectName, type Scene } from "./background";
+import { isSoftware, startBackground, type EffectName, type Scene } from "./background";
 
 type LaunchTarget = {
   name: string;
@@ -691,13 +691,58 @@ type Settings = {
 };
 
 const effectEl = el("seteffect");
+const effectStateEl = el("seteffectstate");
 /** Held while the panel is open, applied live so the choice can be seen. */
 let effect: EffectName = "highlight";
+
+/**
+ * Which of the two glass paths is actually running, in words, where the person
+ * judging the glass will see it.
+ *
+ * Losing the interface capture is the one failure here that looks like a design
+ * choice: the glass keeps working and quietly refracts the wallpaper alone on a
+ * lighter darkness ramp. Issue #4's acceptance run has to start by ruling that
+ * out, and `window.__dmCapture` in devtools is a poor place to make somebody go
+ * and look.
+ */
+function paintEffectState(): void {
+  const bag = window as unknown as { __dmCapture?: string; __dmRenderer?: string };
+  const capture = bag.__dmCapture;
+  const renderer = bag.__dmRenderer ?? "未知";
+  const live = capture !== undefined && capture !== "none";
+  // Named only when it is the answer to something. Spelling out a working GPU
+  // buries the sentence that matters under a driver string nobody needs to read.
+  const gpu = isSoftware(renderer) ? `掉进软件渲染：${renderer}` : "";
+
+  // Neither marker set means the background layer never got as far as looking.
+  // Saying "the capture is missing" there would send the reader after the wrong
+  // thing entirely.
+  if (capture === undefined && bag.__dmRenderer === undefined) {
+    effectStateEl.textContent = "背景层没有启动，这一档什么都没画。";
+    effectStateEl.classList.add("degraded");
+    return;
+  }
+
+  effectStateEl.classList.toggle("degraded", !live);
+  if (effect === "none") {
+    effectStateEl.textContent = gpu || "纯净不画玻璃，这一档没有玻璃可验。";
+    effectStateEl.classList.toggle("degraded", gpu !== "");
+    return;
+  }
+
+  const glass = live
+    ? `玻璃在折射界面（ctx.${capture}），压暗 0.16→0.54。可以按标准验。`
+    : "玻璃只折射壁纸：界面捕获拿不到，压暗换成轻档 0.06→0.26。" +
+      "这一轮不值得验——先查 WebView2 有没有带上 --enable-blink-features=CanvasDrawElement。";
+  effectStateEl.textContent = gpu ? `${glass} 另外${gpu}` : glass;
+  effectStateEl.classList.toggle("degraded", !live || gpu !== "");
+}
 
 function paintEffect(): void {
   for (const b of effectEl.querySelectorAll<HTMLButtonElement>("button")) {
     b.classList.toggle("on", b.dataset.effect === effect);
   }
+  paintEffectState();
 }
 
 /**
