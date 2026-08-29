@@ -1,0 +1,845 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@200..800&family=Noto+Sans+SC:wght@100..900&display=swap" rel="stylesheet">
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#04050a;font-family:'Manrope','Noto Sans SC',system-ui,sans-serif;-webkit-font-smoothing:antialiased;color:#fff;overflow:hidden}
+a{color:#a9cbff;text-decoration:none}a:hover{color:#dbe9ff}
+input{font-family:inherit}
+@keyframes dmRise{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:none}}
+@keyframes dmFade{from{opacity:0}to{opacity:1}}
+@keyframes dmPop{from{opacity:0;transform:scale(.965)}to{opacity:1;transform:none}}
+@keyframes dmSheet{from{opacity:0;transform:translate(-50%,-50%) scale(.965)}to{opacity:1;transform:translate(-50%,-50%) scale(1)}}
+@keyframes dmToast{from{opacity:0;transform:translateY(16px) scale(.97)}to{opacity:1;transform:none}}
+@keyframes dmBurst{0%{opacity:0;transform:scale(.5)}26%{opacity:1}100%{opacity:0;transform:scale(2.2)}}
+::-webkit-scrollbar{width:0;height:0}
+</style>
+</helmet>
+
+<div tabindex="0" ref="{{ stageRef }}" onKeyDown="{{ onKey }}" onContextMenu="{{ onCtx }}" onClick="{{ onBlank }}" style="position:relative;width:100%;height:100vh;min-height:760px;overflow:hidden;outline:none;background:#05070c;display:flex;flex-direction:column">
+
+  <div style="{{ wallStyle }}"></div>
+  <div style="{{ lightStyle }}"></div>
+  <div style="{{ veilStyle }}"></div>
+  <div style="position:absolute;inset:0;pointer-events:none;background:radial-gradient(120% 80% at 50% 50%,rgba(0,0,0,0) 34%,rgba(0,0,0,.5) 100%)"></div>
+
+  <div style="position:relative;z-index:8;flex:none;height:60px;display:flex;align-items:center;gap:clamp(16px,2vw,34px);padding:0 clamp(22px,2.6vw,60px);background:rgba(255,255,255,.055);backdrop-filter:blur(34px) saturate(180%);-webkit-backdrop-filter:blur(34px) saturate(180%);box-shadow:inset 0 1px 0 rgba(255,255,255,.26),inset 0 -1px 0 rgba(0,0,0,.42),0 10px 34px rgba(0,0,0,.28)">
+    <div style="display:flex;align-items:center;gap:10px;flex:none">
+      <div style="{{ markStyle }}"></div>
+      <div style="font-size:15px;font-weight:500;letter-spacing:.005em">deskmind</div>
+    </div>
+
+    <div style="flex:1;min-width:0;display:flex;align-items:center;gap:2px;overflow-x:auto;overflow-y:hidden;scrollbar-width:none;-webkit-mask-image:linear-gradient(90deg,#000 0,#000 calc(100% - 28px),transparent 100%);mask-image:linear-gradient(90deg,#000 0,#000 calc(100% - 28px),transparent 100%)">
+      <sc-for list="{{ tabs }}" as="tab" hint-placeholder-count="10">
+        <div onClick="{{ tab.pick }}" style="{{ tab.style }}">{{ tab.label }}</div>
+      </sc-for>
+    </div>
+
+    <div style="flex:none;display:flex;align-items:center;gap:8px">
+      <div onClick="{{ act.tidy }}" style="padding:7px 15px;border-radius:9px;font-size:13px;font-weight:500;cursor:pointer;color:rgba(255,255,255,.92);background:rgba(255,255,255,.1);box-shadow:inset 0 1px 0 rgba(255,255,255,.24),inset 0 0 0 1px rgba(255,255,255,.08)" style-hover="background:rgba(255,255,255,.19)">整理</div>
+      <div onClick="{{ act.assistant }}" style="{{ act.assistantStyle }}"><span style="font-size:12px;opacity:.9">✦</span>助手</div>
+      <div onClick="{{ act.settings }}" style="padding:7px 15px;border-radius:9px;font-size:13px;font-weight:400;cursor:pointer;color:rgba(255,255,255,.8);background:rgba(255,255,255,.06);box-shadow:inset 0 1px 0 rgba(255,255,255,.16),inset 0 0 0 1px rgba(255,255,255,.06)" style-hover="background:rgba(255,255,255,.14);color:#fff">设置</div>
+      <div onClick="{{ act.search }}" style="display:flex;align-items:center;gap:7px;padding:7px 15px 7px 12px;border-radius:9px;font-size:13px;font-weight:400;cursor:pointer;color:rgba(255,255,255,.8);background:rgba(255,255,255,.06);box-shadow:inset 0 1px 0 rgba(255,255,255,.16),inset 0 0 0 1px rgba(255,255,255,.06)" style-hover="background:rgba(255,255,255,.14);color:#fff"><span style="font-size:13px;opacity:.8">⌕</span>搜索启动项</div>
+      <div style="width:1px;height:20px;background:rgba(255,255,255,.14);margin:0 4px"></div>
+      <div style="font-size:12px;font-weight:300;color:rgba(255,255,255,.52);white-space:nowrap;font-variant-numeric:tabular-nums">{{ summary }}</div>
+      <div style="font-size:14px;font-weight:400;color:rgba(255,255,255,.86);font-variant-numeric:tabular-nums;letter-spacing:.01em;margin-left:6px">{{ clock }}</div>
+    </div>
+  </div>
+
+  <div style="position:relative;z-index:5;flex:none;display:flex;align-items:flex-start;gap:clamp(24px,3vw,64px);padding:clamp(24px,3.4vh,44px) clamp(22px,2.6vw,60px) clamp(16px,2vh,26px)">
+    <div key="{{ heroKey }}" style="flex:0 1 760px;min-width:0;display:flex;gap:22px;animation:dmRise .46s cubic-bezier(.2,.8,.2,1) both">
+      <div style="position:relative;width:96px;height:96px;flex:none;margin-top:6px">
+        <div style="{{ hero.aura }}"></div>
+        <div style="{{ hero.plate }}">
+          <div style="position:absolute;inset:0;background:linear-gradient(180deg,rgba(255,255,255,.38) 0%,rgba(255,255,255,.04) 42%,rgba(0,0,0,.14) 100%)"></div>
+          <div style="position:absolute;inset:0;display:grid;place-items:center;font-size:38px;font-weight:280;letter-spacing:-.02em;color:rgba(255,255,255,.97);text-shadow:0 3px 14px rgba(0,0,0,.4)">{{ hero.glyph }}</div>
+        </div>
+      </div>
+      <div style="flex:1;min-width:0">
+        <div style="display:flex;align-items:center;gap:8px;font-size:11px;font-weight:600;letter-spacing:.18em;color:rgba(255,255,255,.5)">
+          <span>{{ hero.zone }}</span><span style="opacity:.4">/</span><span>{{ hero.source }}</span>
+          <sc-if value="{{ hero.live }}" hint-placeholder-val="{{ true }}">
+            <span style="display:flex;align-items:center;gap:6px;margin-left:4px;padding:3px 9px 3px 7px;border-radius:999px;background:rgba(255,255,255,.1);letter-spacing:.06em;box-shadow:inset 0 0 0 1px rgba(255,255,255,.12)"><span style="width:5px;height:5px;border-radius:50%;background:#86f2b4"></span>运行中</span>
+          </sc-if>
+        </div>
+        <div style="font-size:clamp(38px,3.6vw,58px);line-height:1.06;font-weight:200;letter-spacing:-.03em;margin-top:10px;text-wrap:balance;text-shadow:0 3px 30px rgba(0,0,0,.55)">{{ hero.name }}</div>
+        <div style="margin-top:12px;font-size:12.5px;font-weight:300;color:rgba(255,255,255,.44);letter-spacing:.01em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ hero.path }}</div>
+        <div style="display:flex;align-items:center;gap:10px;margin-top:20px">
+          <div onClick="{{ act.open }}" style="display:flex;align-items:center;gap:9px;padding:11px 22px 11px 18px;border-radius:999px;background:linear-gradient(180deg,rgba(255,255,255,.97),rgba(255,255,255,.85));color:#0a0c12;font-size:14px;font-weight:600;cursor:pointer;box-shadow:0 10px 28px rgba(0,0,0,.42),inset 0 1px 0 #fff" style-hover="transform:translateY(-1px)"><span style="font-size:11px">▶</span>打开</div>
+          <div onClick="{{ act.more }}" style="width:40px;height:40px;border-radius:999px;display:grid;place-items:center;font-size:15px;cursor:pointer;color:rgba(255,255,255,.86);background:rgba(255,255,255,.08);backdrop-filter:blur(24px);box-shadow:inset 0 1px 0 rgba(255,255,255,.2),inset 0 0 0 1px rgba(255,255,255,.1)" style-hover="background:rgba(255,255,255,.16)">⋯</div>
+          <div style="display:flex;gap:26px;margin-left:14px">
+            <sc-for list="{{ hero.stats }}" as="st" hint-placeholder-count="3">
+              <div>
+                <div style="font-size:10px;font-weight:600;letter-spacing:.15em;color:rgba(255,255,255,.36)">{{ st.k }}</div>
+                <div style="font-size:13.5px;font-weight:300;color:rgba(255,255,255,.84);margin-top:4px;font-variant-numeric:tabular-nums">{{ st.v }}</div>
+              </div>
+            </sc-for>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div style="{{ asideStyle }}">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:12px">
+        <div style="font-size:12px;font-weight:600;letter-spacing:.15em;color:rgba(255,255,255,.5)">{{ aside.title }}</div>
+        <div style="font-size:11.5px;font-weight:300;color:rgba(255,255,255,.4);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ aside.meta }}</div>
+      </div>
+
+      <sc-if value="{{ ai.on }}" hint-placeholder-val="{{ false }}">
+        <div style="margin-top:16px;animation:dmFade .26s ease both">
+          <div ref="{{ ai.flowRef }}" style="height:186px;overflow-y:auto;display:flex;flex-direction:column;gap:12px;padding-right:2px">
+            <sc-if value="{{ ai.blank }}" hint-placeholder-val="{{ true }}">
+              <div>
+                <div style="font-size:12.5px;font-weight:300;line-height:1.6;color:rgba(255,255,255,.5);text-wrap:pretty">问它桌面上的事。分区、清理、找不到的启动项都行。</div>
+                <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:12px">
+                  <sc-for list="{{ ai.seeds }}" as="seed" hint-placeholder-count="3">
+                    <div onClick="{{ seed.pick }}" style="padding:7px 11px;border-radius:999px;font-size:11.5px;font-weight:300;cursor:pointer;color:rgba(255,255,255,.74);background:rgba(255,255,255,.07);box-shadow:inset 0 0 0 1px rgba(255,255,255,.08)" style-hover="background:rgba(255,255,255,.15);color:#fff">{{ seed.text }}</div>
+                  </sc-for>
+                </div>
+              </div>
+            </sc-if>
+            <sc-for list="{{ ai.msgs }}" as="msg" hint-placeholder-count="2">
+              <div style="{{ msg.rowStyle }}">
+                <div style="{{ msg.style }}">{{ msg.text }}</div>
+              </div>
+            </sc-for>
+            <sc-if value="{{ ai.busy }}" hint-placeholder-val="{{ false }}">
+              <div style="display:flex;align-items:center;gap:8px;font-size:12px;font-weight:300;color:rgba(255,255,255,.46)">
+                <div style="{{ ai.dot }}"></div>正在想
+              </div>
+            </sc-if>
+          </div>
+          <div style="display:flex;align-items:center;gap:8px;margin-top:14px;padding:5px 5px 5px 14px;border-radius:12px;background:rgba(255,255,255,.07);box-shadow:inset 0 0 0 1px rgba(255,255,255,.1)">
+            <input value="{{ ai.input }}" onChange="{{ ai.onInput }}" onKeyDown="{{ ai.onKey }}" placeholder="问一句" style="flex:1;min-width:0;border:0;outline:0;background:transparent;font-size:13px;font-weight:300;color:#fff;padding:7px 0" />
+            <div onClick="{{ ai.send }}" style="{{ ai.sendStyle }}">↵</div>
+          </div>
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:10px">
+            <div style="font-size:11px;font-weight:300;color:rgba(255,255,255,.34)">{{ ai.model }}</div>
+            <div onClick="{{ ai.clear }}" style="font-size:11px;font-weight:300;color:rgba(255,255,255,.34);cursor:pointer" style-hover="color:rgba(255,255,255,.8)">清空</div>
+          </div>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ aside.isStatus }}" hint-placeholder-val="{{ true }}">
+      <div style="margin-top:16px;display:flex;flex-direction:column;gap:11px">
+        <sc-for list="{{ aside.rows }}" as="row" hint-placeholder-count="3">
+          <div style="display:flex;align-items:center;gap:12px">
+            <div style="{{ row.bar }}"></div>
+            <div style="flex:1;min-width:0;font-size:13px;font-weight:300;color:rgba(255,255,255,.78);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ row.label }}</div>
+            <div style="font-size:13px;font-weight:400;color:#fff;font-variant-numeric:tabular-nums">{{ row.value }}</div>
+          </div>
+        </sc-for>
+      </div>
+      <div style="height:1px;background:rgba(255,255,255,.1);margin:18px 0 15px"></div>
+      <div style="font-size:11.5px;font-weight:300;line-height:1.6;color:rgba(255,255,255,.55);text-wrap:pretty">{{ aside.note }}</div>
+      <div onClick="{{ act.tidy }}" style="margin-top:16px;padding:10px 0;border-radius:10px;text-align:center;font-size:13px;font-weight:500;cursor:pointer;color:rgba(255,255,255,.92);background:rgba(255,255,255,.1);box-shadow:inset 0 1px 0 rgba(255,255,255,.2),inset 0 0 0 1px rgba(255,255,255,.09)" style-hover="background:rgba(255,255,255,.18)">整理未分类的 {{ aside.pending }} 项</div>
+      </sc-if>
+    </div>
+  </div>
+
+  <div ref="{{ gridRef }}" style="position:relative;z-index:4;flex:1;min-height:0;overflow-y:auto;padding:6px clamp(22px,2.6vw,60px) 96px;-webkit-mask-image:linear-gradient(180deg,transparent 0,#000 22px,#000 calc(100% - 86px),transparent 100%);mask-image:linear-gradient(180deg,transparent 0,#000 22px,#000 calc(100% - 86px),transparent 100%)">
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(clamp(148px,11.5vw,196px),1fr));gap:clamp(14px,1.5vw,22px)">
+      <sc-for list="{{ tiles }}" as="tile" hint-placeholder-count="24">
+        <div onMouseEnter="{{ tile.onFocus }}" onMouseMove="{{ tile.onMove }}" onMouseLeave="{{ tile.onRest }}" onClick="{{ tile.onOpen }}" onContextMenu="{{ tile.onCtx }}" style="{{ tile.cellStyle }}">
+          <div style="position:absolute;inset:0;border-radius:18px;background:rgba(255,255,255,.05);box-shadow:inset 0 0 0 1px rgba(255,255,255,.06)"></div>
+          <div style="{{ tile.glowStyle }}"></div>
+          <div style="{{ tile.faceStyle }}">
+            <div style="{{ tile.specStyle }}"></div>
+            <div style="position:absolute;inset:0;border-radius:inherit;pointer-events:none;box-shadow:inset 0 1px 0 rgba(255,255,255,.3),inset 0 -1px 0 rgba(0,0,0,.4),inset 0 0 0 1px rgba(255,255,255,.09)"></div>
+            <div style="{{ tile.iconStyle }}">
+              <div style="position:absolute;inset:0;background:linear-gradient(180deg,rgba(255,255,255,.34),rgba(255,255,255,0) 48%,rgba(0,0,0,.16) 100%)"></div>
+              <div style="{{ tile.glyphStyle }}">{{ tile.glyph }}</div>
+            </div>
+            <div style="{{ tile.labelStyle }}">{{ tile.appName }}</div>
+            <sc-if value="{{ tile.isPinned }}" hint-placeholder-val="{{ false }}">
+              <div style="position:absolute;top:9px;right:10px;width:5px;height:5px;border-radius:50%;background:rgba(255,255,255,.8);box-shadow:0 0 8px rgba(255,255,255,.6)"></div>
+            </sc-if>
+          </div>
+        </div>
+      </sc-for>
+    </div>
+  </div>
+
+  <div style="position:absolute;left:clamp(22px,2.6vw,60px);bottom:22px;z-index:6;display:flex;align-items:center;gap:18px;pointer-events:none">
+    <sc-for list="{{ hints }}" as="hint" hint-placeholder-count="5">
+      <div style="display:flex;align-items:center;gap:7px;font-size:11.5px;font-weight:300;color:rgba(255,255,255,.42)">
+        <span style="padding:2px 6px;border-radius:5px;background:rgba(255,255,255,.1);color:rgba(255,255,255,.74);font-size:10.5px;font-weight:500">{{ hint.k }}</span>{{ hint.v }}
+      </div>
+    </sc-for>
+  </div>
+
+  <sc-if value="{{ toast.on }}" hint-placeholder-val="{{ false }}">
+    <div style="position:absolute;left:0;right:0;bottom:58px;z-index:14;display:flex;justify-content:center;pointer-events:none">
+      <div style="display:flex;align-items:center;gap:14px;padding:13px 16px 13px 18px;border-radius:16px;background:rgba(14,16,22,.66);backdrop-filter:blur(40px) saturate(180%);-webkit-backdrop-filter:blur(40px) saturate(180%);box-shadow:inset 0 1px 0 rgba(255,255,255,.2),inset 0 0 0 1px rgba(255,255,255,.08),0 22px 60px rgba(0,0,0,.55);animation:dmToast .34s cubic-bezier(.2,.8,.2,1) both;pointer-events:auto">
+        <div style="{{ toast.dot }}"></div>
+        <div style="min-width:180px">
+          <div style="font-size:13.5px;font-weight:500;letter-spacing:.01em">{{ toast.title }}</div>
+          <div style="font-size:11.5px;font-weight:300;color:rgba(255,255,255,.56);margin-top:3px">{{ toast.sub }}</div>
+        </div>
+        <sc-if value="{{ toast.hasAct }}" hint-placeholder-val="{{ true }}">
+          <div onClick="{{ toast.act }}" style="padding:8px 15px;border-radius:9px;font-size:12.5px;font-weight:500;cursor:pointer;color:rgba(255,255,255,.94);background:rgba(255,255,255,.11);box-shadow:inset 0 1px 0 rgba(255,255,255,.2),inset 0 0 0 1px rgba(255,255,255,.09)" style-hover="background:rgba(255,255,255,.2)">{{ toast.actLabel }}</div>
+        </sc-if>
+      </div>
+    </div>
+  </sc-if>
+
+  <sc-if value="{{ ctx.on }}" hint-placeholder-val="{{ false }}">
+    <div style="{{ ctx.style }}">
+      <sc-for list="{{ ctx.items }}" as="item" hint-placeholder-count="6">
+        <div onClick="{{ item.run }}" style="{{ item.style }}">
+          <span>{{ item.label }}</span>
+          <span style="font-size:11px;color:rgba(255,255,255,.34);font-weight:300">{{ item.hint }}</span>
+        </div>
+      </sc-for>
+    </div>
+  </sc-if>
+
+  <sc-if value="{{ sheet.scrim }}" hint-placeholder-val="{{ false }}">
+    <div onClick="{{ sheet.close }}" style="position:absolute;inset:0;z-index:18;background:rgba(4,6,11,.42);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);animation:dmFade .26s ease both"></div>
+  </sc-if>
+
+  <sc-if value="{{ search.on }}" hint-placeholder-val="{{ false }}">
+    <div style="position:absolute;left:50%;top:16vh;z-index:22;width:min(680px,86vw);transform:translateX(-50%);animation:dmFade .24s ease both">
+      <div style="display:flex;align-items:center;gap:14px;padding:19px 22px;border-radius:20px;background:rgba(16,18,25,.6);backdrop-filter:blur(46px) saturate(190%);-webkit-backdrop-filter:blur(46px) saturate(190%);box-shadow:inset 0 1px 0 rgba(255,255,255,.24),inset 0 0 0 1px rgba(255,255,255,.09),0 30px 80px rgba(0,0,0,.6)">
+        <div style="{{ search.dot }}"></div>
+        <div style="flex:1;min-width:0;font-size:21px;font-weight:250;letter-spacing:-.01em;color:#fff;white-space:nowrap;overflow:hidden">{{ search.shown }}</div>
+        <div style="font-size:10.5px;font-weight:500;letter-spacing:.08em;padding:4px 8px;border-radius:6px;color:rgba(255,255,255,.5);background:rgba(255,255,255,.08)">ESC</div>
+      </div>
+      <sc-if value="{{ search.hasRows }}" hint-placeholder-val="{{ true }}">
+        <div style="margin-top:10px;border-radius:18px;overflow:hidden;background:rgba(14,16,22,.62);backdrop-filter:blur(46px) saturate(180%);-webkit-backdrop-filter:blur(46px) saturate(180%);box-shadow:inset 0 0 0 1px rgba(255,255,255,.08),0 26px 70px rgba(0,0,0,.55)">
+          <sc-for list="{{ search.rows }}" as="res" hint-placeholder-count="5">
+            <div onClick="{{ res.run }}" style="{{ res.style }}">
+              <div style="{{ res.chip }}">{{ res.glyph }}</div>
+              <div style="flex:1;min-width:0">
+                <div style="font-size:14.5px;font-weight:400;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ res.name }}</div>
+                <div style="font-size:11px;font-weight:300;color:rgba(255,255,255,.42);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ res.sub }}</div>
+              </div>
+              <div style="font-size:10.5px;font-weight:500;letter-spacing:.1em;color:rgba(255,255,255,.34);flex:none">{{ res.tag }}</div>
+            </div>
+          </sc-for>
+        </div>
+      </sc-if>
+      <sc-if value="{{ search.empty }}" hint-placeholder-val="{{ false }}">
+        <div style="margin-top:10px;padding:26px 22px;border-radius:18px;background:rgba(14,16,22,.6);backdrop-filter:blur(46px);-webkit-backdrop-filter:blur(46px);box-shadow:inset 0 0 0 1px rgba(255,255,255,.08);font-size:13.5px;font-weight:300;color:rgba(255,255,255,.56)">没有匹配的启动项。换个词，或者按 Esc 回到桌面。</div>
+      </sc-if>
+    </div>
+  </sc-if>
+
+  <sc-if value="{{ settings.on }}" hint-placeholder-val="{{ false }}">
+    <div style="position:absolute;left:50%;top:50%;z-index:22;width:min(600px,88vw);max-height:82vh;transform:translate(-50%,-50%);border-radius:22px;overflow:hidden;display:flex;flex-direction:column;background:rgba(15,17,24,.7);backdrop-filter:blur(50px) saturate(180%);-webkit-backdrop-filter:blur(50px) saturate(180%);box-shadow:inset 0 1px 0 rgba(255,255,255,.22),inset 0 0 0 1px rgba(255,255,255,.09),0 40px 100px rgba(0,0,0,.66);animation:dmSheet .3s cubic-bezier(.2,.8,.2,1) both">
+      <div style="flex:none;display:flex;align-items:center;justify-content:space-between;padding:20px 24px 16px;box-shadow:inset 0 -1px 0 rgba(255,255,255,.08)">
+        <div style="font-size:17px;font-weight:500;letter-spacing:.01em">设置</div>
+        <div onClick="{{ sheet.close }}" style="font-size:10.5px;font-weight:500;letter-spacing:.08em;padding:4px 8px;border-radius:6px;cursor:pointer;color:rgba(255,255,255,.5);background:rgba(255,255,255,.08)" style-hover="color:#fff">ESC</div>
+      </div>
+      <div style="flex:1;min-height:0;overflow-y:auto;padding:20px 24px 4px;display:flex;flex-direction:column;gap:22px">
+        <div>
+          <div style="font-size:11px;font-weight:600;letter-spacing:.14em;color:rgba(255,255,255,.5)">API KEY</div>
+          <div style="{{ settings.keyField }}">{{ settings.keyText }}</div>
+          <div style="font-size:11.5px;font-weight:300;line-height:1.6;color:rgba(255,255,255,.44);margin-top:9px;text-wrap:pretty">存进 Windows 凭据管理器，不写进配置文件。整理时只把启动项的名字发给模型，不发路径、不发文件内容。</div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+          <div>
+            <div style="font-size:11px;font-weight:600;letter-spacing:.14em;color:rgba(255,255,255,.5)">模型</div>
+            <div style="margin-top:9px;padding:12px 14px;border-radius:11px;font-size:13.5px;font-weight:300;color:rgba(255,255,255,.9);background:rgba(255,255,255,.07);box-shadow:inset 0 0 0 1px rgba(255,255,255,.09)">deepseek-chat</div>
+          </div>
+          <div>
+            <div style="font-size:11px;font-weight:600;letter-spacing:.14em;color:rgba(255,255,255,.5)">接口地址</div>
+            <div style="margin-top:9px;padding:12px 14px;border-radius:11px;font-size:13.5px;font-weight:300;color:rgba(255,255,255,.9);background:rgba(255,255,255,.07);box-shadow:inset 0 0 0 1px rgba(255,255,255,.09);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">api.deepseek.com</div>
+          </div>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:2px;border-radius:14px;overflow:hidden;background:rgba(255,255,255,.05);box-shadow:inset 0 0 0 1px rgba(255,255,255,.08)">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:16px;padding:14px 16px">
+            <div>
+              <div style="font-size:13.5px;font-weight:400">开机启动</div>
+              <div style="font-size:11.5px;font-weight:300;color:rgba(255,255,255,.44);margin-top:3px">开机后自动接管桌面</div>
+            </div>
+            <div onClick="{{ settings.toggleAuto }}" style="{{ settings.switchStyle }}"><div style="{{ settings.knobStyle }}"></div></div>
+          </div>
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:16px;padding:14px 16px;box-shadow:inset 0 1px 0 rgba(255,255,255,.06)">
+            <div>
+              <div style="font-size:13.5px;font-weight:400">遮挡时停止绘制</div>
+              <div style="font-size:11.5px;font-weight:300;color:rgba(255,255,255,.44);margin-top:3px">被别的窗口盖住时 GPU 占用降到 0</div>
+            </div>
+            <div onClick="{{ settings.togglePause }}" style="{{ settings.switch2Style }}"><div style="{{ settings.knob2Style }}"></div></div>
+          </div>
+        </div>
+        <div>
+          <div style="font-size:11px;font-weight:600;letter-spacing:.14em;color:rgba(255,255,255,.5)">背景特效</div>
+          <div style="display:flex;gap:3px;margin-top:10px;padding:3px;border-radius:12px;background:rgba(255,255,255,.06);box-shadow:inset 0 0 0 1px rgba(255,255,255,.08)">
+            <sc-for list="{{ settings.effects }}" as="eff" hint-placeholder-count="3">
+              <div onClick="{{ eff.pick }}" style="{{ eff.style }}">{{ eff.label }}</div>
+            </sc-for>
+          </div>
+          <div style="font-size:11.5px;font-weight:300;line-height:1.6;color:rgba(255,255,255,.44);margin-top:10px;text-wrap:pretty">{{ settings.effectNote }}</div>
+        </div>
+        <div>
+          <div style="display:flex;align-items:baseline;justify-content:space-between">
+            <div style="font-size:11px;font-weight:600;letter-spacing:.14em;color:rgba(255,255,255,.5)">分区</div>
+            <div style="font-size:11.5px;font-weight:300;color:rgba(255,255,255,.4)">拖动手柄调整顺序</div>
+          </div>
+          <div style="margin-top:10px;border-radius:14px;overflow:hidden;background:rgba(255,255,255,.05);box-shadow:inset 0 0 0 1px rgba(255,255,255,.08)">
+            <sc-for list="{{ settings.zones }}" as="zone" hint-placeholder-count="6">
+              <div style="{{ zone.style }}">
+                <div style="font-size:12px;color:rgba(255,255,255,.3);cursor:grab;flex:none">⋮⋮</div>
+                <div style="flex:1;min-width:0;font-size:13.5px;font-weight:400;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ zone.name }}</div>
+                <div style="font-size:12px;font-weight:300;color:rgba(255,255,255,.44);font-variant-numeric:tabular-nums;flex:none">{{ zone.count }}</div>
+                <div onClick="{{ zone.remove }}" style="font-size:12px;font-weight:400;color:rgba(255,255,255,.5);cursor:pointer;flex:none;padding:3px 7px;border-radius:6px" style-hover="color:#ffb4b4;background:rgba(255,120,120,.14)">删除</div>
+              </div>
+            </sc-for>
+          </div>
+          <div onClick="{{ settings.addZone }}" style="margin-top:9px;padding:11px 14px;border-radius:11px;font-size:13px;font-weight:400;cursor:pointer;color:rgba(255,255,255,.72);background:rgba(255,255,255,.05);box-shadow:inset 0 0 0 1px rgba(255,255,255,.08)" style-hover="background:rgba(255,255,255,.12);color:#fff">＋ 新建分区</div>
+        </div>
+      </div>
+      <div style="flex:none;display:flex;align-items:center;gap:10px;padding:16px 24px 18px;box-shadow:inset 0 1px 0 rgba(255,255,255,.08)">
+        <div onClick="{{ settings.save }}" style="padding:10px 22px;border-radius:10px;font-size:13.5px;font-weight:600;cursor:pointer;color:#0a0c12;background:linear-gradient(180deg,rgba(255,255,255,.97),rgba(255,255,255,.86));box-shadow:0 8px 22px rgba(0,0,0,.4),inset 0 1px 0 #fff">保存</div>
+        <div onClick="{{ sheet.close }}" style="padding:10px 20px;border-radius:10px;font-size:13.5px;font-weight:400;cursor:pointer;color:rgba(255,255,255,.8);background:rgba(255,255,255,.07);box-shadow:inset 0 0 0 1px rgba(255,255,255,.1)" style-hover="background:rgba(255,255,255,.14)">取消</div>
+        <div style="flex:1"></div>
+        <div style="font-size:11.5px;font-weight:300;color:rgba(255,255,255,.42)">{{ settings.msg }}</div>
+      </div>
+    </div>
+  </sc-if>
+
+  <sc-if value="{{ first.on }}" hint-placeholder-val="{{ false }}">
+    <div style="position:absolute;left:50%;top:50%;z-index:24;width:min(560px,88vw);transform:translate(-50%,-50%);border-radius:24px;overflow:hidden;background:rgba(15,17,24,.72);backdrop-filter:blur(50px) saturate(180%);-webkit-backdrop-filter:blur(50px) saturate(180%);box-shadow:inset 0 1px 0 rgba(255,255,255,.22),inset 0 0 0 1px rgba(255,255,255,.09),0 44px 110px rgba(0,0,0,.7);animation:dmSheet .32s cubic-bezier(.2,.8,.2,1) both">
+      <div style="padding:26px 30px 0;display:flex;align-items:center;gap:8px">
+        <sc-for list="{{ first.dots }}" as="dot" hint-placeholder-count="4">
+          <div style="{{ dot.style }}"></div>
+        </sc-for>
+        <div style="margin-left:6px;font-size:11px;font-weight:600;letter-spacing:.14em;color:rgba(255,255,255,.44)">{{ first.step }}</div>
+      </div>
+      <div style="padding:22px 30px 4px">
+        <div style="font-size:27px;font-weight:250;letter-spacing:-.02em;line-height:1.2;text-wrap:balance">{{ first.title }}</div>
+        <div style="margin-top:12px;font-size:13.5px;font-weight:300;line-height:1.65;color:rgba(255,255,255,.6);text-wrap:pretty">{{ first.body }}</div>
+      </div>
+      <div style="padding:20px 30px 0">
+        <sc-if value="{{ first.showKey }}" hint-placeholder-val="{{ true }}">
+          <div>
+            <div style="padding:13px 15px;border-radius:12px;font-size:13.5px;font-weight:300;color:rgba(255,255,255,.4);background:rgba(255,255,255,.07);box-shadow:inset 0 0 0 1px rgba(255,255,255,.12)">sk-⋯⋯⋯⋯</div>
+            <div style="margin-top:10px;font-size:11.5px;font-weight:300;color:rgba(255,255,255,.44)">没有 key？到模型服务商的控制台创建一个，粘进来就行。</div>
+          </div>
+        </sc-if>
+        <sc-if value="{{ first.showScan }}" hint-placeholder-val="{{ false }}">
+          <div>
+            <div style="height:3px;border-radius:2px;overflow:hidden;background:rgba(255,255,255,.1)"><div style="{{ first.progress }}"></div></div>
+            <div style="margin-top:12px;font-size:12.5px;font-weight:300;color:rgba(255,255,255,.56)">{{ first.scanText }}</div>
+          </div>
+        </sc-if>
+        <sc-if value="{{ first.showZones }}" hint-placeholder-val="{{ false }}">
+          <div style="display:flex;flex-wrap:wrap;gap:8px">
+            <sc-for list="{{ first.suggest }}" as="sg" hint-placeholder-count="6">
+              <div style="display:flex;align-items:center;gap:9px;padding:9px 14px;border-radius:999px;font-size:13px;font-weight:400;background:rgba(255,255,255,.08);box-shadow:inset 0 1px 0 rgba(255,255,255,.16),inset 0 0 0 1px rgba(255,255,255,.08)">
+                <span>{{ sg.name }}</span>
+                <span style="font-size:11.5px;font-weight:300;color:rgba(255,255,255,.5);font-variant-numeric:tabular-nums">{{ sg.count }}</span>
+                <span onClick="{{ sg.remove }}" style="font-size:12px;color:rgba(255,255,255,.4);cursor:pointer" style-hover="color:#ffb4b4">×</span>
+              </div>
+            </sc-for>
+          </div>
+        </sc-if>
+      </div>
+      <div style="display:flex;align-items:center;gap:10px;padding:24px 30px 26px">
+        <div onClick="{{ first.next }}" style="padding:11px 24px;border-radius:10px;font-size:13.5px;font-weight:600;cursor:pointer;color:#0a0c12;background:linear-gradient(180deg,rgba(255,255,255,.97),rgba(255,255,255,.86));box-shadow:0 8px 22px rgba(0,0,0,.4),inset 0 1px 0 #fff">{{ first.nextLabel }}</div>
+          <div onClick="{{ first.skip }}" style="padding:11px 18px;border-radius:10px;font-size:13.5px;font-weight:400;cursor:pointer;color:rgba(255,255,255,.62)" style-hover="color:#fff;background:rgba(255,255,255,.08)">跳过</div>
+      </div>
+    </div>
+  </sc-if>
+
+  <sc-if value="{{ burst.on }}" hint-placeholder-val="{{ false }}">
+    <div style="position:absolute;inset:0;z-index:26;pointer-events:none;display:grid;place-items:center">
+      <div style="width:170px;height:170px;border-radius:44px;background:radial-gradient(circle,rgba(255,255,255,.9),rgba(255,255,255,.08) 60%,rgba(255,255,255,0) 74%);animation:dmBurst 1s cubic-bezier(.3,0,.2,1) both"></div>
+      <div style="position:absolute;bottom:16vh;font-size:13px;font-weight:300;letter-spacing:.12em;color:rgba(255,255,255,.82)">{{ burst.text }}</div>
+    </div>
+  </sc-if>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1720,&quot;height&quot;:1060},&quot;wallpaper&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;竹林&quot;,&quot;暮色&quot;,&quot;夜&quot;],&quot;default&quot;:&quot;竹林&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;外观&quot;},&quot;effect&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;高亮&quot;,&quot;雾影&quot;,&quot;纯净&quot;],&quot;default&quot;:&quot;高亮&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;外观&quot;},&quot;parallax&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;外观&quot;},&quot;iconSize&quot;:{&quot;editor&quot;:&quot;range&quot;,&quot;default&quot;:46,&quot;min&quot;:36,&quot;max&quot;:64,&quot;step&quot;:2,&quot;unit&quot;:&quot;px&quot;,&quot;tsType&quot;:&quot;number&quot;,&quot;section&quot;:&quot;布局&quot;},&quot;aside&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;布局&quot;}}">
+class Component extends DCLogic {
+  state = {
+    tab: 0, fi: 0, px: 0, py: 0, hot: false,
+    search: false, q: '', sIdx: 0,
+    settings: false, first: false, fstep: 0,
+    ctx: null, toast: null, burst: null,
+    auto: true, pause: true, effect: null, tidying: 0,
+    clock: '', zones: null,
+    pane: 'status', msgs: [], input: '', busy: false
+  };
+
+  seeds = ['把桌面按项目分区', '哪些启动项一个月没用了', '「其他」里的 3 项该放哪'];
+
+  aiSend = () => {
+    const q = this.state.input.trim();
+    if (!q || this.state.busy) return;
+    const msgs = this.state.msgs.concat([{ r: 'u', t: q }]);
+    this.setState({ msgs: msgs, input: '', busy: true });
+    const ctx = '你是 deskmind 的桌面助手。deskmind 是 Windows 桌面美化与启动器，把桌面图标归入分区。当前 46 个启动项，9 个分区，3 项未分类。回答用中文，两句以内，直白、不客套、不用感叹号。\n\n用户：' + q;
+    const done = t => this.setState(s => ({ msgs: s.msgs.concat([{ r: 'a', t: t }]), busy: false }));
+    if (typeof window !== 'undefined' && window.claude && window.claude.complete) {
+      window.claude.complete(ctx).then(r => done(String(r || '').trim() || '没拿到回复。')).catch(() => done('模型没连上。检查设置里的接口地址和 key。'));
+    } else {
+      this.after(900, () => done('未分类的 3 项都是驱动工具，建议归入「硬件」。要我现在整理吗。'));
+    }
+  };
+
+  raw = [
+    ['7-Zip File Manager', '7z', '系统工具', 285, 'C:\\Program Files\\7-Zip\\7zFM.exe', '压缩', 1],
+    ['Android Studio', 'A', '开发', 145, 'C:\\Program Files\\Android\\Android Studio', 'IDE', 1],
+    ['Visual Studio Code', 'V', '开发', 235, 'AppData\\Local\\Programs\\Microsoft VS Code', 'IDE', 1],
+    ['Windows Terminal', '>_', '开发', 250, 'WindowsApps\\WindowsTerminal', '终端', 1],
+    ['Git Bash', 'G', '开发', 25, 'C:\\Program Files\\Git\\git-bash.exe', '终端', 0],
+    ['Docker Desktop', 'D', '开发', 205, 'C:\\Program Files\\Docker\\Docker', '容器', 1],
+    ['DBeaver', 'DB', '开发', 130, 'C:\\Program Files\\DBeaver', '数据库', 0],
+    ['Postman', 'P', '开发', 30, 'AppData\\Local\\Postman', '接口', 0],
+    ['Android Debug Bridge', 'adb', '开发', 160, 'D:\\platform-tools\\adb.exe', '命令', 0],
+
+    ['Administrative Tools', '⚙', '系统工具', 220, 'C:\\ProgramData\\Microsoft\\Windows\\Start Menu', '系统', 0],
+    ['Computer Management', '▤', '系统工具', 230, 'C:\\Windows\\System32\\compmgmt.msc', '系统', 0],
+    ['Command Prompt', 'C:\\', '系统工具', 200, 'C:\\Windows\\System32\\cmd.exe', '终端', 0],
+    ['Character Map', '字', '系统工具', 265, 'C:\\Windows\\System32\\charmap.exe', '系统', 0],
+    ['Component Services', '◈', '系统工具', 190, 'C:\\Windows\\System32\\comexp.msc', '系统', 0],
+    ['Registry Editor', '⌸', '系统工具', 210, 'C:\\Windows\\regedit.exe', '系统', 0],
+    ['Task Scheduler', '⏱', '系统工具', 240, 'C:\\Windows\\System32\\taskschd.msc', '系统', 0],
+
+    ['Microsoft Excel', 'X', '办公', 148, 'C:\\Program Files\\Microsoft Office\\EXCEL.EXE', '表格', 1],
+    ['Microsoft Word', 'W', '办公', 245, 'C:\\Program Files\\Microsoft Office\\WINWORD.EXE', '文档', 0],
+    ['Outlook', 'O', '办公', 238, 'C:\\Program Files\\Microsoft Office\\OUTLOOK.EXE', '邮件', 1],
+    ['Notion', 'N', '办公', 260, 'AppData\\Local\\Programs\\Notion', '笔记', 1],
+    ['Obsidian', 'Ob', '办公', 300, 'AppData\\Local\\Obsidian', '笔记', 0],
+
+    ['Steam', 'St', '游戏', 250, 'C:\\Program Files (x86)\\Steam\\steam.exe', '平台', 1],
+    ['Epic Games Launcher', 'Ep', '游戏', 20, 'C:\\Program Files\\Epic Games', '平台', 0],
+    ['Xbox', 'Xb', '游戏', 155, 'WindowsApps\\XboxApp', '平台', 0],
+    ['Ansnake', 'Y', '游戏', 95, 'D:\\Games\\Ansnake', '独立', 0],
+
+    ['Spotify', 'Sp', '影音', 150, 'AppData\\Roaming\\Spotify', '音乐', 1],
+    ['PotPlayer', '▶', '影音', 205, 'C:\\Program Files\\DAUM\\PotPlayer', '播放', 0],
+    ['OBS Studio', 'OB', '影音', 200, 'C:\\Program Files\\obs-studio', '录制', 0],
+    ['Audacity', 'Au', '影音', 55, 'C:\\Program Files\\Audacity', '音频', 0],
+
+    ['Clash Verge', '⌘', '网络', 320, 'AppData\\Local\\clash-verge', '代理', 1],
+    ['CC Switch', 'CC', '网络', 40, 'D:\\Tools\\cc-switch', '配置', 0],
+    ['WinSCP', 'SC', '网络', 195, 'C:\\Program Files\\WinSCP', '传输', 0],
+    ['Wireshark', 'Wi', '网络', 225, 'C:\\Program Files\\Wireshark', '抓包', 0],
+
+    ['ASUS DriverHub', 'AS', '硬件', 235, 'C:\\Program Files\\ASUS\\DriverHub', '驱动', 0],
+    ['AMD Software', 'AM', '硬件', 25, 'C:\\Program Files\\AMD\\CNext', '驱动', 1],
+    ['GeForce Experience', 'GF', '硬件', 130, 'C:\\Program Files\\NVIDIA Corporation', '驱动', 0],
+    ['Apple 设备', 'Ap', '硬件', 215, 'WindowsApps\\AppleInc.AppleDevices', '同步', 0],
+    ['AMD Install Manager', 'IM', '硬件', 15, 'C:\\Program Files\\AMD\\Install', '工具', 0],
+
+    ['Figma', 'F', '设计', 300, 'AppData\\Local\\Figma', '界面', 1],
+    ['Blender', 'B', '设计', 55, 'C:\\Program Files\\Blender Foundation', '三维', 0],
+    ['Photoshop', 'Ps', '设计', 245, 'C:\\Program Files\\Adobe\\Photoshop', '图像', 1],
+    ['Affinity Designer', 'Af', '设计', 275, 'C:\\Program Files\\Affinity\\Designer', '矢量', 0],
+
+    ['Check for Updates', '↻', '其他', 340, 'C:\\Windows\\System32\\control.exe', '系统', 0],
+    ['Rufus', 'R', '其他', 60, 'D:\\Tools\\rufus.exe', '启动盘', 0],
+    ['Everything', 'E', '其他', 195, 'C:\\Program Files\\Everything', '搜索', 1],
+    ['PowerToys', 'PT', '其他', 315, 'C:\\Program Files\\PowerToys', '增强', 1]
+  ];
+
+  cats = ['全部', '开发', '系统工具', '办公', '游戏', '影音', '网络', '硬件', '设计', '其他'];
+  EASE = 'cubic-bezier(.2,.8,.2,1)';
+
+  walls = {
+    '竹林': { a: 145, b: 96, top: '#193a1f', mid: '#4d7d2c', low: '#8ea83a', horizon: '#d8c48a', dim: 0.42 },
+    '暮色': { a: 22, b: 300, top: '#2a1a3c', mid: '#7a3a52', low: '#d4744c', horizon: '#f0b070', dim: 0.34 },
+    '夜': { a: 245, b: 220, top: '#080a14', mid: '#131a2c', low: '#1d2740', horizon: '#3a4a6a', dim: 0.2 }
+  };
+
+  timers = [];
+  after(ms, fn) { const t = setTimeout(fn, ms); this.timers.push(t); return t; }
+  componentDidMount() {
+    if (this.stage) this.stage.focus();
+    this.tickClock();
+    this.clockId = setInterval(() => this.tickClock(), 20000);
+  }
+  componentWillUnmount() { clearInterval(this.clockId); this.timers.forEach(clearTimeout); }
+  componentDidUpdate() {
+    if (!this.grid) return;
+    const el = this.grid.querySelector('div');
+    if (!el) return;
+    const kids = el.children;
+    const node = kids[Math.min(this.state.fi, kids.length - 1)];
+    if (!node) return;
+    if (kids[0]) {
+      let c = 0, top = kids[0].offsetTop;
+      for (let i = 0; i < kids.length; i++) { if (kids[i].offsetTop !== top) break; c++; }
+      this.cols = Math.max(1, c);
+    }
+    const top = node.offsetTop, h = node.offsetHeight, vt = this.grid.scrollTop, vh = this.grid.clientHeight;
+    if (top < vt + 8) this.grid.scrollTop = Math.max(0, top - 12);
+    else if (top + h > vt + vh - 90) this.grid.scrollTop = top + h - vh + 96;
+  }
+  tickClock() {
+    const d = new Date();
+    this.setState({ clock: d.getHours() + ':' + String(d.getMinutes()).padStart(2, '0') });
+  }
+
+  apps() {
+    return this.raw.map(r => ({ n: r[0], g: r[1], z: r[2], h: r[3], p: r[4], k: r[5], pin: !!r[6] }));
+  }
+  zoneList() {
+    return this.state.zones || this.cats.slice(1).map(c => ({ name: c, count: this.apps().filter(a => a.z === c).length }));
+  }
+  list() {
+    const cat = this.cats[this.state.tab], all = this.apps();
+    return cat === '全部' ? all : all.filter(a => a.z === cat);
+  }
+  cur() { const l = this.list(); return l[Math.min(this.state.fi, l.length - 1)] || this.apps()[0]; }
+  hue(h, l, c) { return 'oklch(' + l + ' ' + c + ' ' + h + ')'; }
+  wall() { return this.walls[this.props.wallpaper] || this.walls['竹林']; }
+  effect() { return this.state.effect || this.props.effect || '高亮'; }
+
+  closeAll = () => this.setState({ search: false, settings: false, first: false, ctx: null, q: '' });
+  say = (title, sub, actLabel, act) => {
+    this.setState({ toast: { title: title, sub: sub, actLabel: actLabel, act: act } });
+    if (this.toastId) clearTimeout(this.toastId);
+    this.toastId = this.after(actLabel ? 6000 : 3200, () => this.setState({ toast: null }));
+  };
+  open = app => {
+    const a = app || this.cur();
+    this.setState({ burst: a.n, search: false, ctx: null });
+    this.after(1000, () => this.setState({ burst: null }));
+  };
+  tidy = () => {
+    this.setState({ ctx: null, pane: 'status', tidying: 1, toast: { title: '正在整理', sub: '把 46 个启动项归入 9 个分区', actLabel: null } });
+    this.after(1500, () => {
+      this.setState({ tidying: 2 });
+      this.say('已整理 43 项', '3 项模型判断不了，留在「其他」', '撤销', this.undo);
+    });
+  };
+  undo = () => { this.setState({ tidying: 0 }); this.say('已回到整理前', '46 项坐标都写回去了', null, null); };
+
+  focusAt = i => this.setState({ fi: i, hot: true });
+  rest = () => this.setState({ hot: false, px: 0, py: 0 });
+  moveOn = (i, e) => {
+    if (this.props.parallax === false) return;
+    const r = e.currentTarget.getBoundingClientRect();
+    this.setState({ fi: i, hot: true, px: ((e.clientX - r.left) / r.width - 0.5) * 2, py: ((e.clientY - r.top) / r.height - 0.5) * 2 });
+  };
+
+  onCtx = e => {
+    e.preventDefault();
+    this.setState({ ctx: { x: e.clientX, y: e.clientY, app: null } });
+  };
+  tileCtx = (app, e) => {
+    e.preventDefault(); e.stopPropagation();
+    this.setState({ ctx: { x: e.clientX, y: e.clientY, app: app } });
+  };
+  onBlank = () => { if (this.state.ctx) this.setState({ ctx: null }); };
+
+  results() {
+    const q = this.state.q.trim().toLowerCase();
+    const cmds = [
+      { name: '整理桌面', sub: '把启动项归入分区', tag: '命令', glyph: '✦', run: this.tidy },
+      { name: '新建分区', sub: '在设置里加一个空分区', tag: '命令', glyph: '＋', run: () => this.setState({ search: false, settings: true }) }
+    ].filter(c => !q || c.name.toLowerCase().indexOf(q) >= 0);
+    const apps = this.apps().filter(a => !q || (a.n + a.z + a.k).toLowerCase().indexOf(q) >= 0)
+      .map(a => ({ name: a.n, sub: a.p, tag: a.z, glyph: a.g, h: a.h, run: () => this.open(a) }));
+    return cmds.concat(apps).slice(0, 6);
+  }
+
+  onKey = e => {
+    const st = this.state;
+    if (st.first) { if (e.key === 'Escape') { e.preventDefault(); this.setState({ first: false }); } return; }
+    if (st.settings) { if (e.key === 'Escape') { e.preventDefault(); this.setState({ settings: false }); } return; }
+    if (st.search) {
+      if (e.key === 'Escape') { e.preventDefault(); return this.setState({ search: false, q: '' }); }
+      if (e.key === 'Backspace') { e.preventDefault(); return this.setState(s => ({ q: s.q.slice(0, -1), sIdx: 0 })); }
+      if (e.key === 'ArrowDown') { e.preventDefault(); return this.setState(s => ({ sIdx: Math.min(this.results().length - 1, s.sIdx + 1) })); }
+      if (e.key === 'ArrowUp') { e.preventDefault(); return this.setState(s => ({ sIdx: Math.max(0, s.sIdx - 1) })); }
+      if (e.key === 'Enter') { e.preventDefault(); const r = this.results()[st.sIdx]; if (r) r.run(); return; }
+      if (e.key.length === 1) { e.preventDefault(); return this.setState(s => ({ q: s.q + e.key, sIdx: 0 })); }
+      return;
+    }
+    if (e.key === 'Escape') { e.preventDefault(); return this.setState({ ctx: null, toast: null }); }
+    const n = this.list().length, cols = this.cols || 8;
+    const go = i => { e.preventDefault(); this.setState({ fi: Math.max(0, Math.min(n - 1, i)), px: 0, py: 0, hot: false }); };
+    if (e.key === 'ArrowRight') return go(st.fi + 1);
+    if (e.key === 'ArrowLeft') return go(st.fi - 1);
+    if (e.key === 'ArrowDown') return go(st.fi + cols);
+    if (e.key === 'ArrowUp') return go(st.fi - cols);
+    if (e.key === 'Tab') { e.preventDefault(); return this.setState(s => ({ tab: (s.tab + 1) % this.cats.length, fi: 0 })); }
+    if (e.key === 'Enter') { e.preventDefault(); return this.open(); }
+    if (e.key.length === 1) { e.preventDefault(); return this.setState({ search: true, q: e.key, sIdx: 0 }); }
+  };
+
+  renderVals() {
+    const P = this.props, st = this.state, E = this.EASE;
+    const par = P.parallax !== false, IS = P.iconSize || 46;
+    const eff = this.effect(), W = this.wall();
+    const l = this.list(), n = l.length;
+    const fi = Math.min(st.fi, n - 1);
+    const cur = l[fi] || this.apps()[0];
+    const accent = this.hue(W.a, 0.78, 0.13);
+    const dim = eff === '雾影' ? W.dim + 0.16 : eff === '纯净' ? W.dim - 0.18 : W.dim;
+    const zones = this.zoneList();
+    const rs = this.results();
+
+    const tiles = l.map((a, i) => {
+      const on = i === fi;
+      const rx = on && par && st.hot ? (-st.py * 6).toFixed(2) : 0;
+      const ry = on && par && st.hot ? (st.px * 7).toFixed(2) : 0;
+      const fly = st.tidying === 1 ? 'translate(' + ((i % 5 - 2) * 26) + 'px,' + ((i % 3 - 1) * 20) + 'px)' : 'translate(0,0)';
+      return {
+        appName: a.n, glyph: a.g, isPinned: a.pin,
+        onFocus: () => this.focusAt(i),
+        onMove: e => this.moveOn(i, e),
+        onRest: this.rest,
+        onOpen: () => { this.focusAt(i); this.open(a); },
+        onCtx: e => this.tileCtx(a, e),
+        cellStyle: 'position:relative;aspect-ratio:5/3;cursor:pointer;z-index:' + (on ? 5 : 1) +
+          ';transform:' + fly + ';transition:transform ' + (st.tidying === 1 ? '.62s' : '.5s') + ' ' + E + ' ' + (i % 12) * 26 + 'ms',
+        glowStyle: 'position:absolute;inset:-16%;border-radius:50%;pointer-events:none;opacity:' + (on ? 1 : 0) +
+          ';background:radial-gradient(closest-side,' + this.hue(a.h, 0.72, 0.15) + ',rgba(0,0,0,0) 74%);filter:blur(22px);transition:opacity .36s ' + E,
+        faceStyle: 'position:absolute;inset:0;border-radius:18px;overflow:hidden;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:11px;padding:14px 12px' +
+          ';background:linear-gradient(168deg,rgba(255,255,255,' + (on ? 0.22 : 0.1) + ') 0%,rgba(255,255,255,' + (on ? 0.1 : 0.045) + ') 52%,rgba(255,255,255,' + (on ? 0.05 : 0.02) + ') 100%)' +
+          ';backdrop-filter:blur(' + (on ? 30 : 18) + 'px) saturate(' + (on ? 190 : 140) + '%);-webkit-backdrop-filter:blur(' + (on ? 30 : 18) + 'px) saturate(' + (on ? 190 : 140) + '%)' +
+          ';box-shadow:' + (on ? '0 26px 56px rgba(0,0,0,.55),0 4px 14px rgba(0,0,0,.34)' : '0 8px 20px rgba(0,0,0,.26)') +
+          ';transform:perspective(900px) rotateX(' + rx + 'deg) rotateY(' + ry + 'deg) scale(' + (on ? 1.1 : 1) + ')' +
+          ';transition:transform .34s ' + E + ',background .34s ' + E + ',box-shadow .34s ' + E + ';will-change:transform',
+        specStyle: 'position:absolute;inset:0;pointer-events:none;opacity:' + (on ? 1 : 0) +
+          ';background:radial-gradient(140% 120% at ' + (50 + (par && st.hot ? st.px * 40 : 0)).toFixed(1) + '% ' + (12 + (par && st.hot ? st.py * 30 : 0)).toFixed(1) +
+          '%,rgba(255,255,255,.3) 0%,rgba(255,255,255,.05) 40%,rgba(255,255,255,0) 66%);transition:opacity .3s ' + E,
+        iconStyle: 'position:relative;width:' + IS + 'px;height:' + IS + 'px;flex:none;border-radius:' + Math.round(IS * 0.24) + 'px;overflow:hidden' +
+          ';background:linear-gradient(162deg,' + this.hue(a.h, 0.82, 0.13) + ' 0%,' + this.hue(a.h, 0.58, 0.16) + ' 60%,' + this.hue((a.h + 22) % 360, 0.42, 0.11) + ' 100%)' +
+          ';box-shadow:0 4px 12px rgba(0,0,0,.4),inset 0 1px 0 rgba(255,255,255,.4)' +
+          ';transform:translate3d(' + (on && par && st.hot ? (st.px * -5).toFixed(1) : 0) + 'px,' + (on && par && st.hot ? (st.py * -4).toFixed(1) : 0) + 'px,0) scale(' + (on ? 1.06 : 1) + ')' +
+          ';transition:transform .2s linear',
+        glyphStyle: 'position:absolute;inset:0;display:grid;place-items:center;font-size:' + Math.round(IS * 0.4) + 'px;font-weight:300;letter-spacing:-.02em;color:rgba(255,255,255,.97);text-shadow:0 2px 8px rgba(0,0,0,.34)',
+        labelStyle: 'max-width:100%;text-align:center;font-size:12px;font-weight:' + (on ? 500 : 350) + ';line-height:1.35;letter-spacing:.005em;color:' + (on ? '#fff' : 'rgba(255,255,255,.72)') +
+          ';display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;text-shadow:0 2px 8px rgba(0,0,0,.5);transition:color .3s ' + E
+      };
+    });
+
+    const ctxItems = st.ctx ? (st.ctx.app
+      ? [
+        { label: '打开', hint: 'Enter', run: () => this.open(st.ctx.app) },
+        { label: '固定到前面', hint: '', run: () => this.say('已固定「' + st.ctx.app.n + '」', '它会排在分区最前面', null, null) },
+        { label: '移到分区…', hint: '', run: () => this.say('选一个分区', '在设置里可以调整分区顺序', null, null) },
+        { label: '打开文件位置', hint: '', run: () => this.say('已在资源管理器里定位', st.ctx.app.p, null, null) },
+        { label: '从桌面隐藏', hint: '', run: () => this.say('已隐藏「' + st.ctx.app.n + '」', '在设置里可以恢复', '撤销', null) }
+      ]
+      : [
+        { label: '刷新', hint: 'F5', run: () => this.say('已刷新', '重新读了一遍启动项', null, null) },
+        { label: '整理', hint: '', run: this.tidy },
+        { label: '新建分区', hint: '', run: () => this.setState({ ctx: null, settings: true }) },
+        { label: '搜索启动项', hint: '打字', run: () => this.setState({ ctx: null, search: true, q: '' }) },
+        { label: '设置', hint: '', run: () => this.setState({ ctx: null, settings: true }) },
+        { label: '显示设置', hint: '', run: () => this.say('已打开系统显示设置', '这一项交给 Windows', null, null) },
+        { label: '个性化', hint: '', run: () => this.say('已打开系统个性化', '换壁纸后 deskmind 会重新取色', null, null) },
+        { label: '重走首次运行', hint: '', run: () => this.setState({ ctx: null, first: true, fstep: 0 }) },
+        { label: '退出 deskmind', hint: '', run: () => this.say('已退出', '桌面图标回到 Windows 自己的排布', null, null) }
+      ]) : [];
+
+    const fsteps = ['填 API key', '分析桌面', '分区建议', '完成'];
+    const fdata = [
+      { title: '先给 deskmind 一把钥匙', body: '整理需要一次模型调用。key 存在 Windows 凭据管理器里，只有你的机器能读到；发出去的只有启动项的名字。' },
+      { title: '正在看你的桌面', body: '读取桌面项与开始菜单快捷方式，一次调用就够。不会移动任何文件。' },
+      { title: '这是建议的分区', body: '分区归你，不归模型。改名、删掉、留着都行，下一步之后你还能随时改。' },
+      { title: '桌面归你了', body: '空白处右键可以再整理、改设置。打字直接搜索启动项。' }
+    ];
+    const fs = fdata[st.fstep];
+
+    return {
+      stageRef: el => { this.stage = el; },
+      gridRef: el => { this.grid = el; },
+      onKey: this.onKey, onCtx: this.onCtx, onBlank: this.onBlank,
+      clock: st.clock,
+      heroKey: cur.n,
+      summary: '共 ' + this.apps().length + ' 项 · 固定 ' + this.apps().filter(a => a.pin).length,
+      hints: [{ k: '← →', v: '选择' }, { k: 'Tab', v: '换分区' }, { k: 'Enter', v: '打开' }, { k: '打字', v: '搜索' }, { k: '右键', v: '菜单' }],
+
+      wallStyle: 'position:absolute;inset:0;background:' +
+        'radial-gradient(90% 62% at 50% 96%,' + W.horizon + ' 0%,rgba(0,0,0,0) 58%),' +
+        'linear-gradient(178deg,' + W.top + ' 0%,' + W.mid + ' 46%,' + W.low + ' 78%,' + W.horizon + ' 100%)',
+      lightStyle: 'position:absolute;inset:0;pointer-events:none;opacity:' + (eff === '纯净' ? 0 : eff === '雾影' ? 0.5 : 0.8) +
+        ';background:' + (eff === '雾影'
+          ? 'radial-gradient(120% 70% at 30% 30%,rgba(255,255,255,.16) 0%,rgba(255,255,255,0) 62%),radial-gradient(90% 60% at 74% 62%,rgba(255,255,255,.1) 0%,rgba(255,255,255,0) 64%)'
+          : 'linear-gradient(104deg,rgba(255,255,255,0) 34%,rgba(255,255,255,.2) 48%,rgba(255,255,255,0) 62%),radial-gradient(70% 50% at 50% 14%,rgba(255,255,255,.18) 0%,rgba(255,255,255,0) 70%)') +
+        ';transition:opacity .5s ' + E,
+      veilStyle: 'position:absolute;inset:0;pointer-events:none;background:linear-gradient(180deg,rgba(4,6,11,' + (dim + 0.16).toFixed(2) + ') 0%,rgba(4,6,11,' + dim.toFixed(2) + ') 34%,rgba(4,6,11,' + (dim + 0.22).toFixed(2) + ') 100%);transition:background .5s ' + E,
+      markStyle: 'width:8px;height:8px;border-radius:50%;background:' + accent + ';box-shadow:0 0 12px ' + accent,
+
+      tabs: this.cats.map((c, i) => ({
+        label: c, pick: () => this.setState({ tab: i, fi: 0 }),
+        style: 'padding:7px 14px;border-radius:8px;font-size:13px;cursor:pointer;white-space:nowrap;transition:all .26s ' + E +
+          (i === st.tab
+            ? ';font-weight:600;color:#0b0d13;background:rgba(255,255,255,.94);box-shadow:0 4px 12px rgba(0,0,0,.3)'
+            : ';font-weight:400;color:rgba(255,255,255,.6);background:transparent')
+      })),
+
+      act: {
+        tidy: this.tidy,
+        assistant: () => this.setState(s => ({ pane: s.pane === 'ai' ? 'status' : 'ai' })),
+        assistantStyle: 'display:flex;align-items:center;gap:6px;padding:7px 15px;border-radius:9px;font-size:13px;cursor:pointer;transition:all .24s ' + E +
+          (st.pane === 'ai'
+            ? ';font-weight:600;color:#0b0d13;background:rgba(255,255,255,.94);box-shadow:0 4px 12px rgba(0,0,0,.3)'
+            : ';font-weight:500;color:rgba(255,255,255,.92);background:rgba(255,255,255,.1);box-shadow:inset 0 1px 0 rgba(255,255,255,.24),inset 0 0 0 1px rgba(255,255,255,.08)'),
+        settings: () => this.setState({ settings: true, ctx: null }),
+        search: () => this.setState({ search: true, q: '', sIdx: 0, ctx: null }),
+        open: () => this.open(),
+        more: e => this.tileCtx(cur, e)
+      },
+
+      hero: {
+        name: cur.n, zone: cur.z, source: cur.k, path: cur.p, glyph: cur.g, live: cur.pin,
+        stats: [{ k: '最近使用', v: '今天 09:24' }, { k: '本周', v: '11 次' }, { k: '来源', v: '开始菜单' }],
+        aura: 'position:absolute;inset:-24%;border-radius:50%;filter:blur(30px);opacity:.6;background:radial-gradient(closest-side,' + this.hue(cur.h, 0.7, 0.16) + ',rgba(0,0,0,0) 72%);transition:background .6s ' + E,
+        plate: 'position:absolute;inset:0;border-radius:26px;overflow:hidden;background:linear-gradient(162deg,' + this.hue(cur.h, 0.83, 0.13) + ' 0%,' + this.hue(cur.h, 0.58, 0.16) + ' 58%,' + this.hue((cur.h + 22) % 360, 0.42, 0.11) + ' 100%)' +
+          ';box-shadow:0 22px 50px rgba(0,0,0,.55),inset 0 1px 0 rgba(255,255,255,.42),inset 0 0 0 1px rgba(255,255,255,.1);transition:background .6s ' + E
+      },
+
+      asideStyle: 'flex:none;margin-left:auto;width:clamp(280px,23vw,460px);height:clamp(306px,34vh,380px);padding:20px 22px;border-radius:20px;flex-direction:column;display:' + (P.aside === false ? 'none' : 'flex') +
+        ';background:rgba(255,255,255,.055);backdrop-filter:blur(34px) saturate(170%);-webkit-backdrop-filter:blur(34px) saturate(170%)' +
+        ';box-shadow:inset 0 1px 0 rgba(255,255,255,.2),inset 0 0 0 1px rgba(255,255,255,.08),0 18px 44px rgba(0,0,0,.3);animation:dmRise .5s ' + E + ' both',
+      ai: {
+        on: st.pane === 'ai',
+        blank: st.msgs.length === 0,
+        busy: st.busy,
+        input: st.input,
+        model: 'deepseek-chat · 只发启动项名字',
+        flowRef: el => { if (el) el.scrollTop = el.scrollHeight; },
+        onInput: e => this.setState({ input: e.target.value }),
+        onKey: e => { e.stopPropagation(); if (e.key === 'Enter') { e.preventDefault(); this.aiSend(); } },
+        send: this.aiSend,
+        clear: () => this.setState({ msgs: [], input: '' }),
+        seeds: this.seeds.map(s => ({ text: s, pick: () => this.setState({ input: s }) })),
+        sendStyle: 'width:32px;height:32px;flex:none;border-radius:9px;display:grid;place-items:center;font-size:13px;cursor:pointer;transition:all .22s ' + E +
+          (st.input.trim() ? ';color:#0b0d13;background:rgba(255,255,255,.94);box-shadow:0 3px 10px rgba(0,0,0,.3)' : ';color:rgba(255,255,255,.34);background:rgba(255,255,255,.07)'),
+        dot: 'width:6px;height:6px;border-radius:50%;background:' + accent + ';box-shadow:0 0 8px ' + accent,
+        msgs: st.msgs.map(m => ({
+          text: m.t,
+          rowStyle: 'display:flex;justify-content:' + (m.r === 'u' ? 'flex-end' : 'flex-start'),
+          style: m.r === 'u'
+            ? 'max-width:86%;padding:9px 13px;border-radius:13px 13px 4px 13px;font-size:12.5px;font-weight:300;line-height:1.55;color:#fff;background:rgba(255,255,255,.13);box-shadow:inset 0 1px 0 rgba(255,255,255,.18);text-wrap:pretty'
+            : 'max-width:92%;font-size:12.5px;font-weight:300;line-height:1.65;color:rgba(255,255,255,.82);text-wrap:pretty'
+        }))
+      },
+
+      aside: {
+        isStatus: st.pane !== 'ai',
+        title: st.pane === 'ai' ? '助手' : '桌面状态',
+        meta: st.pane === 'ai' ? (st.busy ? '正在回答' : '一次整理只调一次模型') : (st.tidying === 2 ? '刚刚整理过' : '上次整理 2 小时前'),
+        when: st.tidying === 2 ? '刚刚整理过' : '上次整理 2 小时前',
+        pending: 3,
+        note: eff === '纯净' ? '纯净模式下面板退回 CSS 底色，着色器不画玻璃。' : '配色取自当前壁纸主色，不跟随系统深浅色模式。',
+        rows: [
+          { label: '已归入分区', value: '43', w: 88 },
+          { label: '未分类', value: '3', w: 12 },
+          { label: '分区数量', value: String(zones.length), w: 54 }
+        ].map(r => ({
+          label: r.label, value: r.value,
+          bar: 'width:3px;height:22px;border-radius:2px;flex:none;background:linear-gradient(180deg,' + accent + ',rgba(255,255,255,.14));opacity:' + (0.4 + r.w / 200).toFixed(2)
+        }))
+      },
+
+      tiles: tiles,
+
+      toast: {
+        on: !!st.toast,
+        title: st.toast ? st.toast.title : '',
+        sub: st.toast ? st.toast.sub : '',
+        hasAct: !!(st.toast && st.toast.actLabel),
+        actLabel: st.toast && st.toast.actLabel ? st.toast.actLabel : '',
+        act: st.toast && st.toast.act ? st.toast.act : () => this.setState({ toast: null }),
+        dot: 'width:8px;height:8px;border-radius:50%;flex:none;background:' + (st.tidying === 1 ? accent : 'rgba(255,255,255,.85)') + ';box-shadow:0 0 10px ' + (st.tidying === 1 ? accent : 'rgba(255,255,255,.5)')
+      },
+
+      ctx: {
+        on: !!st.ctx,
+        style: 'position:absolute;z-index:20;left:' + (st.ctx ? Math.min(st.ctx.x, 1200) : 0) + 'px;top:' + (st.ctx ? st.ctx.y : 0) + 'px' +
+          ';min-width:212px;padding:6px;border-radius:14px;background:rgba(16,18,25,.72);backdrop-filter:blur(40px) saturate(180%);-webkit-backdrop-filter:blur(40px) saturate(180%)' +
+          ';box-shadow:inset 0 1px 0 rgba(255,255,255,.2),inset 0 0 0 1px rgba(255,255,255,.09),0 26px 60px rgba(0,0,0,.6);animation:dmPop .18s ' + E + ' both',
+        items: ctxItems.map((it, i) => ({
+          label: it.label, hint: it.hint,
+          run: e => { if (e) e.stopPropagation(); this.setState({ ctx: null }); it.run(); },
+          style: 'display:flex;align-items:center;justify-content:space-between;gap:16px;padding:9px 12px;border-radius:9px;font-size:13px;font-weight:400;cursor:pointer;color:' +
+            (it.label.indexOf('退出') === 0 ? 'rgba(255,190,190,.9)' : 'rgba(255,255,255,.88)') +
+            (i && ctxItems[i - 1] && (it.label === '设置' || it.label === '退出 deskmind' || it.label === '打开文件位置') ? ';margin-top:5px;box-shadow:inset 0 1px 0 rgba(255,255,255,.09)' : '')
+        }))
+      },
+
+      sheet: { scrim: st.search || st.settings || st.first, close: this.closeAll },
+
+      search: {
+        on: st.search,
+        shown: st.q || '搜索启动项',
+        hasRows: st.search && rs.length > 0,
+        empty: st.search && rs.length === 0,
+        dot: 'width:9px;height:9px;border-radius:50%;flex:none;background:' + accent + ';box-shadow:0 0 12px ' + accent,
+        rows: rs.map((r, i) => ({
+          name: r.name, sub: r.sub, tag: r.tag, glyph: r.glyph,
+          run: () => r.run(),
+          style: 'display:flex;align-items:center;gap:14px;padding:13px 20px;cursor:pointer;transition:background .18s linear' +
+            (i === st.sIdx ? ';background:rgba(255,255,255,.1)' : ';background:transparent') +
+            (i ? ';box-shadow:inset 0 1px 0 rgba(255,255,255,.06)' : ''),
+          chip: 'width:36px;height:36px;flex:none;border-radius:10px;display:grid;place-items:center;font-size:14px;font-weight:300;color:#fff' +
+            ';background:linear-gradient(162deg,' + this.hue(r.h || W.a, 0.8, 0.13) + ',' + this.hue(r.h || W.a, 0.55, 0.15) + ');box-shadow:inset 0 1px 0 rgba(255,255,255,.36)'
+        }))
+      },
+
+      settings: {
+        on: st.settings,
+        keyText: 'sk-••••••••••••••••••••••••7f2a',
+        keyField: 'margin-top:9px;padding:13px 15px;border-radius:11px;font-size:13.5px;font-weight:300;letter-spacing:.04em;color:rgba(255,255,255,.9);background:rgba(255,255,255,.07);box-shadow:inset 0 0 0 1px ' + accent.replace(')', ' / 45%)') + ',inset 0 1px 0 rgba(255,255,255,.1)',
+        toggleAuto: () => this.setState(s => ({ auto: !s.auto })),
+        togglePause: () => this.setState(s => ({ pause: !s.pause })),
+        switchStyle: 'width:44px;height:26px;border-radius:999px;flex:none;cursor:pointer;position:relative;transition:background .26s ' + E + ';background:' + (st.auto ? accent : 'rgba(255,255,255,.14)') + ';box-shadow:inset 0 1px 3px rgba(0,0,0,.3)',
+        knobStyle: 'position:absolute;top:3px;left:' + (st.auto ? 21 : 3) + 'px;width:20px;height:20px;border-radius:50%;background:#fff;box-shadow:0 2px 6px rgba(0,0,0,.35);transition:left .26s ' + E,
+        switch2Style: 'width:44px;height:26px;border-radius:999px;flex:none;cursor:pointer;position:relative;transition:background .26s ' + E + ';background:' + (st.pause ? accent : 'rgba(255,255,255,.14)') + ';box-shadow:inset 0 1px 3px rgba(0,0,0,.3)',
+        knob2Style: 'position:absolute;top:3px;left:' + (st.pause ? 21 : 3) + 'px;width:20px;height:20px;border-radius:50%;background:#fff;box-shadow:0 2px 6px rgba(0,0,0,.35);transition:left .26s ' + E,
+        effects: ['高亮', '雾影', '纯净'].map(x => ({
+          label: x, pick: () => this.setState({ effect: x }),
+          style: 'flex:1;text-align:center;padding:9px 0;border-radius:9px;font-size:13px;cursor:pointer;transition:all .24s ' + E +
+            (x === eff ? ';font-weight:600;color:#0b0d13;background:rgba(255,255,255,.94);box-shadow:0 3px 10px rgba(0,0,0,.28)' : ';font-weight:400;color:rgba(255,255,255,.66)')
+        })),
+        effectNote: eff === '高亮' ? '光带掠过壁纸，背景提亮，面板是极清玻璃。' : eff === '雾影' ? '缓慢流动的雾，背景压暗更重，面板走磨砂。' : '只有壁纸，没有遮罩也没有玻璃，面板退回 CSS 底色。',
+        zones: zones.map((z, i) => ({
+          name: z.name, count: z.count + ' 项',
+          remove: () => this.setState(s => ({ zones: (s.zones || zones).filter(x => x.name !== z.name) })),
+          style: 'display:flex;align-items:center;gap:12px;padding:12px 14px' + (i ? ';box-shadow:inset 0 1px 0 rgba(255,255,255,.06)' : '')
+        })),
+        addZone: () => this.setState(s => ({ zones: (s.zones || zones).concat([{ name: '新分区', count: 0 }]) })),
+        save: () => { this.setState({ settings: false }); this.say('设置已保存', '背景特效切到「' + eff + '」', null, null); },
+        msg: st.auto ? '开机后自动接管桌面' : '需要手动启动'
+      },
+
+      first: {
+        on: st.first,
+        step: (st.fstep + 1) + ' / 4 · ' + fsteps[st.fstep],
+        title: fs.title, body: fs.body,
+        dots: [0, 1, 2, 3].map(i => ({
+          style: 'width:' + (i === st.fstep ? 22 : 6) + 'px;height:6px;border-radius:3px;transition:all .3s ' + E +
+            ';background:' + (i === st.fstep ? accent : i < st.fstep ? 'rgba(255,255,255,.5)' : 'rgba(255,255,255,.16)')
+        })),
+        showKey: st.fstep === 0,
+        showScan: st.fstep === 1,
+        showZones: st.fstep === 2,
+        progress: 'height:100%;width:64%;border-radius:2px;background:linear-gradient(90deg,' + accent + ',rgba(255,255,255,.8));transition:width .5s ' + E,
+        scanText: '已读 46 个启动项，正在归类…',
+        suggest: zones.slice(0, 6).map(z => ({
+          name: z.name, count: z.count,
+          remove: () => this.setState(s => ({ zones: (s.zones || zones).filter(x => x.name !== z.name) }))
+        })),
+        nextLabel: st.fstep === 3 ? '开始用' : st.fstep === 2 ? '就用这些分区' : '继续',
+        next: () => st.fstep === 3 ? this.setState({ first: false }) : this.setState(s => ({ fstep: s.fstep + 1 })),
+        skip: () => this.setState({ first: false })
+      },
+
+      burst: { on: !!st.burst, text: '正在启动 ' + (st.burst || '') }
+    };
+  }
+}
+</script>
+</body>
+</html>
