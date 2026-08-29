@@ -128,10 +128,11 @@ fn quit(app: AppHandle) {
 /// keep in step.
 #[tauri::command]
 fn desktop_occluded(window: WebviewWindow) -> desktop::Occlusion {
-    if let Ok(hwnd) = desktop::handle_of(&window) {
+    let hwnd = desktop::handle_of(&window).ok();
+    if let Some(hwnd) = hwnd {
         desktop::hold(hwnd);
     }
-    desktop::occluded()
+    desktop::occluded(hwnd)
 }
 
 #[derive(serde::Serialize)]
