@@ -22,6 +22,11 @@ pub struct Config {
     /// twice. Distinct from "has a key": someone may finish onboarding by
     /// declining the AI entirely.
     pub onboarded: bool,
+    /// When the last tidy succeeded, in milliseconds since the epoch. Zero means
+    /// never — the status panel shows no time at all rather than claiming a tidy
+    /// that never happened. Milliseconds because the only reader is `Date` in the
+    /// webview.
+    pub last_tidy: u64,
 }
 
 impl Default for Config {
@@ -34,6 +39,7 @@ impl Default for Config {
             base_url: "https://api.deepseek.com/chat/completions".into(),
             effect: "highlight".into(),
             onboarded: false,
+            last_tidy: 0,
         }
     }
 }

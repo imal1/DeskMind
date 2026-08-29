@@ -126,15 +126,21 @@
   #summary { font-size: 12.5px; color: var(--ink-50); }
   #clock { font-size: 15px; letter-spacing: .04em; color: rgba(255, 255, 255, 0.8); }
 
-  /* Selected-target detail. Width tracks the viewport so an ultrawide gets a
-     roomier column instead of the mock's fixed 580px stranded on the left. */
+  /* Selected target on the left, desktop status on the right. Below roughly
+     740px of window the status panel wraps under the hero rather than the two
+     squeezing each other — a column this text-heavy stops being readable long
+     before it stops fitting. */
+  #head {
+    position: relative; z-index: 7; flex: none;
+    display: flex; flex-wrap: wrap; align-items: flex-start;
+    gap: clamp(20px, 2.6vw, 56px);
+    padding: clamp(16px, 2.4vh, 34px) var(--gutter) clamp(12px, 1.6vh, 22px);
+  }
   #hero {
-    position: relative; z-index: 7; flex: 1;
-    display: flex; flex-direction: column; justify-content: center;
+    flex: 1 1 460px; min-width: 0;
+    display: flex; flex-direction: column;
     gap: clamp(14px, 1.6vh, 20px);
-    padding: 0 var(--gutter);
-    width: min(620px, 48vw);
-    min-height: 0;
+    max-width: 760px;
   }
   #heroline { display: flex; align-items: center; gap: 18px; }
   #heroico {
@@ -178,35 +184,57 @@
   }
   #more:hover { color: #fff; background: rgba(255, 255, 255, 0.13); }
 
-  /* Tile rail. The container is glass with every edge masked out, so tiles fade
-     rather than getting clipped at a hard border. */
-  #shelf {
-    position: relative; z-index: 7; flex: none;
-    margin: 0 var(--gutter) clamp(10px, 1.4vh, 20px);
-    padding: clamp(20px, 2.4vh, 40px) clamp(18px, 1.8vw, 34px) 20px;
-    display: flex; flex-direction: column; gap: 14px;
-    background: var(--glass-bg); backdrop-filter: var(--glass);
-    /* Percentage stops, not the design's pixel ones: those cross over and invert
-       the mask — turning the whole shelf transparent — whenever the container is
-       shorter than about 70px. Percentages cannot invert at any height. */
-    -webkit-mask-image:
-      linear-gradient(180deg, transparent 0, #000 14%, #000 94%, transparent 100%),
-      linear-gradient(90deg, transparent 0, #000 3%, #000 97%, transparent 100%);
-    -webkit-mask-composite: source-in;
-    mask-image:
-      linear-gradient(180deg, transparent 0, #000 14%, #000 94%, transparent 100%),
-      linear-gradient(90deg, transparent 0, #000 3%, #000 97%, transparent 100%);
-    mask-composite: intersect;
+  /* Desktop status: how far the tidying has got, in three numbers. */
+  #status {
+    flex: 0 1 clamp(260px, 24vw, 340px);
+    padding: 18px 20px 20px; border-radius: 20px;
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(255, 255, 255, 0.09);
+    backdrop-filter: blur(20px);
   }
-  /* The rail and the top controls take their treatment from the chosen effect.
-     Highlight follows iOS 27's navigation chrome: clear rather than frosted, a
-     bright hairline along the top edge, buttons that read as lit glass. */
-  [data-effect="highlight"] #shelf {
-    background: rgba(255, 255, 255, 0.035);
-    backdrop-filter: blur(12px) saturate(1.5) brightness(1.12);
-    border-top: 1px solid rgba(255, 255, 255, 0.22);
-    border-radius: 26px 26px 0 0;
+  #statushead { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  #statustitle { font-size: 12px; font-weight: 400; letter-spacing: .15em; color: var(--ink-50); }
+  #statuswhen { font-size: 11.5px; color: var(--ink-36); white-space: nowrap; }
+  #statusrows { display: flex; flex-direction: column; gap: 11px; margin-top: 16px; }
+  .srow { display: flex; align-items: center; gap: 12px; }
+  /* The bar carries the share as brightness, set per row from JS: three rows of
+     identical stubs would be decoration, not data. */
+  .sbar {
+    width: 3px; height: 22px; border-radius: 2px; flex: none;
+    background: linear-gradient(180deg, var(--accent), rgba(255, 255, 255, 0.14));
   }
+  .slabel { flex: 1; min-width: 0; font-size: 13px; color: var(--ink-86); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .svalue { font-size: 13px; font-weight: 400; font-variant-numeric: tabular-nums; }
+  #tidyunzoned {
+    width: 100%; margin-top: 16px; padding: 10px 0; border-radius: 12px;
+    font-size: 13px; color: var(--ink-96);
+    background: rgba(255, 255, 255, 0.1);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    transition: background .3s var(--ease);
+  }
+  #tidyunzoned:hover { background: rgba(255, 255, 255, 0.18); }
+  #tidyunzoned:disabled { opacity: .45; cursor: default; background: rgba(255, 255, 255, 0.06); }
+
+  /* Tile grid: one vertically scrolling field, fading out top and bottom rather
+     than ending at a hard edge. The rail's pager is gone with it — a grid is
+     scrolled, not paged. */
+  #grid {
+    position: relative; z-index: 7; flex: 1; min-height: 0;
+    overflow-y: auto; scrollbar-width: none;
+    padding: 6px var(--gutter) clamp(20px, 3vh, 44px);
+    display: grid; align-content: start;
+    /* auto-fill, so the column count is whatever the window can hold — the point
+       of the grid is that the layout answers to the window, not to a page size we
+       picked. */
+    grid-template-columns: repeat(auto-fill, minmax(clamp(148px, 11.5vw, 196px), 1fr));
+    gap: clamp(14px, 1.5vw, 22px);
+    -webkit-mask-image: linear-gradient(180deg, transparent 0, #000 22px, #000 calc(100% - 40px), transparent 100%);
+    mask-image: linear-gradient(180deg, transparent 0, #000 22px, #000 calc(100% - 40px), transparent 100%);
+  }
+  #grid::-webkit-scrollbar { display: none; }
+  /* The tiles and the top controls take their treatment from the chosen effect.
+     Highlight follows iOS 27's navigation chrome: clear rather than frosted,
+     buttons that read as lit glass. */
   [data-effect="highlight"] .tile {
     background: rgba(255, 255, 255, 0.10);
     border-color: rgba(255, 255, 255, 0.20);
@@ -217,9 +245,14 @@
     border-color: rgba(255, 255, 255, 0.42);
     box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.5), 0 22px 50px -24px rgba(0, 0, 0, .8);
   }
+  [data-effect="highlight"] #status {
+    background: rgba(255, 255, 255, 0.09);
+    border-color: rgba(255, 255, 255, 0.2);
+    backdrop-filter: blur(12px) saturate(1.5) brightness(1.12);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.3);
+  }
   [data-effect="highlight"] #tabs,
-  [data-effect="highlight"] .pill,
-  [data-effect="highlight"] .page {
+  [data-effect="highlight"] .pill {
     background: rgba(255, 255, 255, 0.12);
     border-color: rgba(255, 255, 255, 0.26);
     backdrop-filter: blur(12px) saturate(1.5) brightness(1.12);
@@ -248,62 +281,47 @@
   }
 
   /* 纯净: no chrome at all, just the wallpaper and the content on it. */
-  [data-effect="none"] #shelf {
-    background: none;
+  [data-effect="none"] #status {
+    background: rgba(0, 0, 0, 0.22);
     backdrop-filter: none;
-    -webkit-mask-image: none;
-    mask-image: none;
+    border-color: rgba(255, 255, 255, 0.12);
   }
   [data-effect="none"] #tabs,
-  [data-effect="none"] .pill,
-  [data-effect="none"] .page {
+  [data-effect="none"] .pill {
     backdrop-filter: none;
     background: rgba(0, 0, 0, 0.22);
     border-color: rgba(255, 255, 255, 0.12);
   }
   [data-effect="none"] #tidybtn { background: var(--accent); }
 
-  #shelfhead { display: flex; align-items: center; gap: 14px; padding: 0 6px; }
-  #railtitle { font-size: 15px; letter-spacing: .08em; }
-  #railmeta { font-size: 12px; color: var(--ink-50); }
-  #pager { margin-left: auto; display: flex; gap: 6px; }
-  .page {
-    width: 30px; height: 30px; border-radius: 999px; line-height: 1; font-size: 15px;
-    color: rgba(255, 255, 255, 0.6);
-    background: rgba(255, 255, 255, 0.06);
-    border: 1px solid rgba(255, 255, 255, 0.12);
-    transition: all .35s var(--ease);
-  }
-  .page:hover { color: #fff; background: rgba(255, 255, 255, 0.13); }
-
-  #rail { display: flex; gap: 16px; overflow-x: auto; padding: 6px 6px 10px; scroll-behavior: smooth; scrollbar-width: none; }
-  #rail::-webkit-scrollbar { display: none; }
   .tile {
-    position: relative; flex: none;
-    width: clamp(104px, 7.4vw, 124px);
-    padding: 18px 12px 15px; border-radius: 22px;
+    position: relative;
+    /* 5:3, from the design. A cell sized by its contents instead would give
+       every row a different height as soon as one label wrapped to two lines. */
+    aspect-ratio: 5 / 3;
+    padding: 14px 12px 12px; border-radius: 20px;
+    justify-content: center;
     background: rgba(255, 255, 255, 0.06);
     border: 1px solid rgba(255, 255, 255, 0.08);
     display: flex; flex-direction: column; align-items: center; gap: 12px;
-    transition: width .4s var(--ease), transform .4s var(--ease), background .3s var(--ease);
+    transition: transform .3s var(--ease), background .3s var(--ease);
   }
   .tile:hover { background: rgba(255, 255, 255, 0.1); }
-  /* The selected tile widens rather than gaining an outline — the design keeps
-     every emphasis soft, no neon borders anywhere. */
+  /* The selected tile lifts rather than widening: in a grid a widening cell would
+     reflow every tile after it, which is the one thing a grid is meant to stop. */
   .tile.on {
-    width: clamp(136px, 9.8vw, 164px);
-    background: rgba(255, 255, 255, 0.13);
-    border-color: rgba(255, 255, 255, 0.2);
-    transform: translateY(-6px);
+    background: rgba(255, 255, 255, 0.15);
+    border-color: rgba(255, 255, 255, 0.24);
+    transform: translateY(-4px);
     box-shadow: 0 22px 50px -24px rgba(0, 0, 0, .9);
   }
   .tile.dragging { opacity: .4; }
   .tileico {
-    width: clamp(38px, 3vw, 46px); aspect-ratio: 1; border-radius: 12px;
+    width: clamp(40px, 3.2vw, 52px); aspect-ratio: 1; border-radius: 13px;
     background-color: rgba(255, 255, 255, 0.07);
     background-size: contain; background-repeat: no-repeat; background-position: center;
     display: flex; align-items: center; justify-content: center;
-    font-size: 17px; color: var(--ink-50);
+    font-size: 18px; color: var(--ink-50);
     box-shadow: inset 0 1px 0 rgba(255, 255, 255, .2);
   }
   .tilename {
@@ -312,7 +330,9 @@
     display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
   }
   .tilepin { position: absolute; top: 11px; right: 11px; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
-  #railempty { font-size: 13px; color: var(--ink-50); padding: 26px 6px; }
+  /* Spans the whole grid, or an empty zone would put one line of text in a
+     148px column. */
+  #gridempty { grid-column: 1 / -1; font-size: 13px; color: var(--ink-50); padding: 26px 6px; }
 
   #hints {
     position: relative; z-index: 9; flex: none;
@@ -565,35 +585,37 @@
       </div>
     </div>
 
-    <div id="hero">
-      <div id="heroline">
-        <div id="heroico"></div>
-        <div id="herotext">
-          <div id="herometa"></div>
-          <div id="herotitle"></div>
+    <div id="head">
+      <div id="hero">
+        <div id="heroline">
+          <div id="heroico"></div>
+          <div id="herotext">
+            <div id="herometa"></div>
+            <div id="herotitle"></div>
+          </div>
+        </div>
+        <div id="heropath"></div>
+        <div id="heroacts">
+          <button id="open">打开</button>
+          <button id="more">⋯</button>
         </div>
       </div>
-      <div id="heropath"></div>
-      <div id="heroacts">
-        <button id="open">打开</button>
-        <button id="more">⋯</button>
+
+      <div id="status">
+        <div id="statushead">
+          <div id="statustitle">桌面状态</div>
+          <div id="statuswhen"></div>
+        </div>
+        <div id="statusrows"></div>
+        <button id="tidyunzoned"></button>
       </div>
     </div>
 
-    <div id="shelf">
-      <div id="shelfhead">
-        <div id="railtitle"></div>
-        <div id="railmeta"></div>
-        <div id="pager">
-          <button class="page" id="left">‹</button>
-          <button class="page" id="right">›</button>
-        </div>
-      </div>
-      <div id="rail"></div>
-    </div>
+    <div id="grid"></div>
 
     <div id="hints">
       <span><span class="k">← →</span>选择</span>
+      <span><span class="k">↑ ↓</span>换行</span>
       <span><span class="k">Tab</span>换分区</span>
       <span><span class="k">Enter</span>打开</span>
       <span><span class="k">打字</span>搜索</span>
@@ -677,6 +699,14 @@
           <button data-effect="none">纯净</button>
         </div>
         <div class="fhint">高亮：光带掠过壁纸，背景提亮，面板是极清玻璃。雾影：缓慢流动的雾，背景压暗。纯净：只有壁纸，没有遮罩也没有玻璃。被遮挡时都会停止绘制。</div>
+      </div>
+
+      <div class="frow hide" id="sethiddenrow">
+        <div>
+          <div style="font-size: 13.5px" id="sethiddencount"></div>
+          <div class="fhint">隐藏只决定桌面上看不看得见，搜索照样搜得到、启动得了</div>
+        </div>
+        <button id="sethiddenrestore" class="zdel">全部恢复</button>
       </div>
 
       <div class="field">

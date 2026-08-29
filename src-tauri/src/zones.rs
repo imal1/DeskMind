@@ -38,6 +38,13 @@ pub struct Zones {
     /// Owned by the backend: the webview never sends this field back, so
     /// `write_zones` carries it across rather than trusting the round trip.
     pub added: Vec<String>,
+    /// Paths the user took off the desktop grid, including out of 全部.
+    ///
+    /// Hiding is about the look of the desktop and nothing else: a hidden target
+    /// is still searchable and still launchable, and its file is untouched
+    /// (ADR 0004). Backend-owned for the same reason as `added` — `write_zones`
+    /// carries it across, and `write_hidden` is the one way to change it.
+    pub hidden: Vec<String>,
 }
 
 fn file() -> Option<std::path::PathBuf> {
@@ -93,6 +100,8 @@ pub fn apply(
         pinned: existing.pinned.clone(),
         // Same reasoning: a tidy decides zone membership, not what exists.
         added: existing.added.clone(),
+        // Nor what the user wants to look at.
+        hidden: existing.hidden.clone(),
     };
 
     // Anything the model did not place stays where it was.
@@ -128,6 +137,7 @@ mod tests {
             ],
             pinned: vec![r"C:\a.lnk".into()],
             added: vec![r"C:\dropped.txt".into()],
+            hidden: vec![r"C:\b.lnk".into()],
         }
     }
 
@@ -174,6 +184,13 @@ mod tests {
         let decision = HashMap::from([("A".to_string(), "游戏".to_string())]);
         let out = apply(&zones(), &decision, &names());
         assert_eq!(out.added, vec![r"C:\dropped.txt".to_string()]);
+    }
+
+    #[test]
+    fn tidy_keeps_the_hidden_list() {
+        let decision = HashMap::from([("A".to_string(), "游戏".to_string())]);
+        let out = apply(&zones(), &decision, &names());
+        assert_eq!(out.hidden, vec![r"C:\b.lnk".to_string()]);
     }
 
     #[test]

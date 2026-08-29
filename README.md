@@ -41,6 +41,7 @@ winget install OpenJS.NodeJS.LTS
 npm install
 npm run tauri dev          # 开发
 npm run tauri build        # 出安装包
+bun test                   # 前端测试
 cd src-tauri; cargo test   # 后端测试
 ```
 
@@ -49,7 +50,7 @@ cd src-tauri; cargo test   # 后端测试
 | 内容 | 位置 |
 |---|---|
 | 模型、接口地址、引导状态 | `%APPDATA%\deskmind\config.json` |
-| 分区与固定 | `%APPDATA%\deskmind\zones.json` |
+| 分区、固定与隐藏 | `%APPDATA%\deskmind\zones.json` |
 | API key | Windows 凭据管理器，名为 `deskmind` |
 
 两个 JSON 都是给人读的，可以手改、可以分享。

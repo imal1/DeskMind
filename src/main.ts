@@ -1,6 +1,7 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { rank } from "./match";
+import { deskStats, moveInGrid, sinceTidy, type ArrowKey } from "./desk";
 import { startBackground, type EffectName, type Scene } from "./background";
 
 type LaunchTarget = {
@@ -10,7 +11,8 @@ type LaunchTarget = {
 };
 
 type StoredZone = { name: string; items: string[] };
-type Zones = { zones: StoredZone[]; pinned: string[] };
+/** `hidden` is backend-owned: it arrives here but is written by `write_hidden`. */
+type Zones = { zones: StoredZone[]; pinned: string[]; hidden?: string[] };
 
 const win = getCurrentWindow();
 
@@ -18,9 +20,10 @@ const el = <T extends HTMLElement>(id: string): T =>
   document.getElementById(id) as T;
 
 const tabsEl = el("tabs");
-const railEl = el("rail");
-const railTitleEl = el("railtitle");
-const railMetaEl = el("railmeta");
+const gridEl = el("grid");
+const statusWhenEl = el("statuswhen");
+const statusRowsEl = el("statusrows");
+const tidyUnzonedEl = el<HTMLButtonElement>("tidyunzoned");
 const summaryEl = el("summary");
 const clockEl = el("clock");
 const scrimEl = el("scrim");
@@ -45,6 +48,16 @@ let iconOf = new Map<string, string>();
 let stored: StoredZone[] = [];
 /** Paths the user pinned. They sort to the front of whichever zone they are in. */
 let pinned = new Set<string>();
+/**
+ * Paths taken off the grid, including out of 全部. Hiding is about the look of
+ * the desktop only — search reads `all`, not this filtered view, so a hidden
+ * target is still one keystroke away.
+ */
+let hiddenPaths = new Set<string>();
+/** Milliseconds since the epoch, or 0 for "never tidied". */
+let lastTidy = 0;
+/** Columns the grid actually laid out, measured after each paint. */
+let cols = 1;
 /** The zone set as it was before the last tidy, for undo. */
 let previous: Zones | null = null;
 let zone = 0;
@@ -60,13 +73,19 @@ function tabNames(): string[] {
   return ["全部", ...stored.map((z) => z.name)];
 }
 
+/** Everything the grid may show: every target the user has not hidden. */
+function onDesktop(): LaunchTarget[] {
+  return all.filter((t) => !hiddenPaths.has(t.path));
+}
+
 function inZone(): LaunchTarget[] {
+  const shown = onDesktop();
   const base =
     zone === 0
-      ? all
+      ? shown
       : (() => {
           const members = new Set(stored[zone - 1]?.items ?? []);
-          return all.filter((t) => members.has(t.path));
+          return shown.filter((t) => members.has(t.path));
         })();
 
   // Pinned first, otherwise the order the backend produced. A stable partition
@@ -173,12 +192,15 @@ function openCtx(t: LaunchTarget, x: number, y: number): void {
   head.id = "ctxhead";
   head.textContent = t.name;
 
-  // No 打开 here: the detail panel has a button for it and a tile opens on
-  // double-click, so a third way would just be noise.
+  // 打开 leads, because a right-click menu that cannot open the thing it is about
+  // sends the user back out to find another way in.
   const nodes: HTMLElement[] = [
     head,
+    menuItem("打开", () => void run(t)),
+    menuItem("打开文件位置", () => void revealIn(t)),
+    menuSep(),
     menuItem(pinned.has(t.path) ? "取消固定" : "固定", () => togglePin(t)),
-    menuItem("打开所在文件夹", () => void revealIn(t)),
+    menuItem("从桌面隐藏", () => void hideTarget(t)),
     menuItem("复制路径", () => void copyPath(t)),
   ];
 
@@ -248,7 +270,7 @@ async function reloadTargets(): Promise<void> {
   toast(`已刷新 ${all.length} 个启动项`);
 }
 
-// ---------- rail ----------
+// ---------- grid ----------
 
 function paintTabs(): void {
   const names = tabNames();
@@ -284,38 +306,37 @@ function paintTabs(): void {
   );
 }
 
-function paintRail(): void {
+function paintGrid(): void {
   const items = inZone();
-  railTitleEl.textContent = tabNames()[zone] ?? "全部";
-  railMetaEl.textContent = `${items.length} 个启动项`;
   summaryEl.textContent = `共 ${all.length} 项 · 图标 ${iconOf.size}`;
 
   if (items.length === 0) {
     const empty = document.createElement("div");
-    empty.id = "railempty";
+    empty.id = "gridempty";
     empty.textContent =
       stored.length === 0 ? "还没有分区，点右上角「整理」让 AI 提一套" : "这个分区还是空的";
-    railEl.replaceChildren(empty);
+    gridEl.replaceChildren(empty);
+    cols = 1;
     paintHero();
     return;
   }
 
   tile = Math.min(tile, items.length - 1);
 
-  railEl.replaceChildren(
+  gridEl.replaceChildren(
     ...items.map((t, i) => {
       const node = document.createElement("div");
       node.className = i === tile ? "tile on" : "tile";
       node.title = t.path;
       node.addEventListener("click", () => {
         tile = i;
-        paintRail();
+        paintGrid();
       });
       node.addEventListener("dblclick", () => void run(t));
       node.addEventListener("contextmenu", (e) => {
         e.preventDefault();
         tile = i;
-        paintRail();
+        paintGrid();
         openCtx(t, e.clientX, e.clientY);
       });
 
@@ -348,13 +369,83 @@ function paintRail(): void {
     }),
   );
 
-  railEl.children[tile]?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  cols = measureCols();
+  gridEl.children[tile]?.scrollIntoView({ block: "nearest" });
   paintHero();
+}
+
+/**
+ * How many tiles the grid put on the first row. Measured rather than derived from
+ * the CSS, because `auto-fill` is the whole point: the column count is whatever
+ * the window worked out, and the keyboard has to agree with what is on screen.
+ */
+function measureCols(): number {
+  const kids = [...gridEl.children] as HTMLElement[];
+  const first = kids[0];
+  if (!first) return 1;
+  const top = first.offsetTop;
+  const n = kids.findIndex((k) => k.offsetTop !== top);
+  return Math.max(1, n === -1 ? kids.length : n);
+}
+
+// ---------- desktop status ----------
+
+/**
+ * The three numbers that say how far the tidying has got, over what is actually
+ * on the desktop. 未分类 is the remainder, never a row in the zone count — it is
+ * the name of not having a zone (see CONTEXT.md).
+ */
+function paintStatus(): void {
+  // Over every launch target, hidden ones included: 未分类 is a fact about the
+  // target, not about whether it is on screen, and the tidy this panel starts
+  // will reach the hidden ones too. Counting only the visible ones would report
+  // progress that hiding, not tidying, produced.
+  const s = deskStats(all.map((t) => t.path), stored);
+
+  statusWhenEl.textContent = sinceTidy(lastTidy, Date.now()) ?? "";
+  // Each bar reads as bright as its row is large, against the largest of the
+  // three — the design's way of showing the split without a chart.
+  const rows = [
+    ["已归入分区", s.zoned],
+    ["未分类", s.unzoned],
+    ["分区数量", s.zoneCount],
+  ] as const;
+  const largest = Math.max(1, ...rows.map(([, value]) => value));
+
+  statusRowsEl.replaceChildren(
+    ...rows.map(([label, value]) => {
+      const row = document.createElement("div");
+      row.className = "srow";
+
+      const bar = document.createElement("div");
+      bar.className = "sbar";
+      bar.style.opacity = (0.4 + (value / largest) * 0.55).toFixed(2);
+
+      const name = document.createElement("div");
+      name.className = "slabel";
+      name.textContent = label;
+
+      const count = document.createElement("div");
+      count.className = "svalue";
+      count.textContent = String(value);
+
+      row.append(bar, name, count);
+      return row;
+    }),
+  );
+
+  tidyUnzonedEl.textContent = `整理未分类的 ${s.unzoned} 项`;
+  // With nothing left over there is nothing to start: a tidy here would spend a
+  // model call to re-file what is already filed.
+  // Disabled with no zones as well: with nothing to file into, 整理 becomes the
+  // 分区建议 of ADR 0009 — a different act, and one the 整理 button owns.
+  tidyUnzonedEl.disabled = s.unzoned === 0 || s.zoneCount === 0;
 }
 
 function paint(): void {
   paintTabs();
-  paintRail();
+  paintGrid();
+  paintStatus();
 }
 
 // ---------- search overlay ----------
@@ -445,6 +536,8 @@ const urlEl = el<HTMLInputElement>("seturl");
 const autoEl = el("setauto");
 const setMsgEl = el("setmsg");
 const setZonesEl = el("setzones");
+const hiddenRowEl = el("sethiddenrow");
+const hiddenCountEl = el("sethiddencount");
 
 let settingsOpen = false;
 
@@ -606,6 +699,16 @@ function togglePin(target: LaunchTarget): void {
   void commitZones(stored);
 }
 
+/**
+ * The bulk way back: one row, only when there is something to restore. Hiding one
+ * target does not deserve a permanent settings section, and an always-visible
+ * "已隐藏 0 项" would be a row about nothing.
+ */
+function paintHiddenRow(): void {
+  hiddenRowEl.classList.toggle("hide", hiddenPaths.size === 0);
+  hiddenCountEl.textContent = `已隐藏 ${hiddenPaths.size} 项`;
+}
+
 async function openSettings(): Promise<void> {
   const s = await invoke<Settings>("read_settings");
   // The backend only reports whether a key exists. An empty field means "leave it
@@ -624,6 +727,7 @@ async function openSettings(): Promise<void> {
   // Deep copy, so discarding really discards.
   draft = stored.map((z) => ({ name: z.name, items: [...z.items] }));
   paintZoneRows();
+  paintHiddenRow();
 
   settingsOpen = true;
   scrimEl.classList.remove("hide");
@@ -687,7 +791,10 @@ async function revealIn(target: LaunchTarget): Promise<void> {
   try {
     await invoke("reveal", { path: target.path });
   } catch (err) {
-    console.error("打开所在文件夹失败", target.path, err);
+    // Worth a toast rather than only the console: the usual failure is a
+    // shortcut pointing at something that has since been uninstalled, and
+    // nothing visible happening looks like a broken menu item.
+    toast("打开文件位置失败", String(err));
   }
 }
 
@@ -709,11 +816,12 @@ async function run(target: LaunchTarget): Promise<void> {
   }
 }
 
-function moveTile(delta: number): void {
+/** Arrow keys over the grid. Reading order sideways, a whole row up and down. */
+function moveTile(key: ArrowKey): void {
   const items = inZone();
   if (items.length === 0) return;
-  tile = (tile + delta + items.length) % items.length;
-  paintRail();
+  tile = moveInGrid(tile, items.length, cols, key);
+  paintGrid();
 }
 
 function moveZone(delta: number): void {
@@ -762,6 +870,45 @@ async function loadZones(): Promise<void> {
   const value = await invoke<Zones>("read_zones");
   stored = value.zones;
   pinned = new Set(value.pinned ?? []);
+  hiddenPaths = new Set(value.hidden ?? []);
+}
+
+/**
+ * Writes a new hidden list through and repaints. Every change to what is hidden
+ * goes through here, so disk and grid can never disagree.
+ */
+async function setHidden(next: Set<string>, failure: string): Promise<boolean> {
+  try {
+    await invoke("write_hidden", { paths: [...next] });
+  } catch (err) {
+    toast(failure, String(err));
+    return false;
+  }
+  hiddenPaths = next;
+  paint();
+  if (settingsOpen) paintHiddenRow();
+  return true;
+}
+
+/**
+ * Takes a launch target off the grid — every tab of it, 全部 included.
+ *
+ * Not a removal: the target still exists, search still finds it, and its file is
+ * untouched (ADR 0004). Search is the recovery path a user reaches for first,
+ * which is why the toast says so; 设置 carries the bulk one.
+ */
+async function hideTarget(t: LaunchTarget): Promise<void> {
+  const next = new Set(hiddenPaths);
+  next.add(t.path);
+  if (!(await setHidden(next, "隐藏失败"))) return;
+  toast(`已隐藏「${t.name}」`, "搜索还能找到它，设置里可以全部恢复", {
+    label: "撤销",
+    act: () => {
+      const back = new Set(hiddenPaths);
+      back.delete(t.path);
+      void setHidden(back, "恢复失败");
+    },
+  });
 }
 
 async function undoTidy(): Promise<void> {
@@ -780,7 +927,7 @@ async function undoTidy(): Promise<void> {
   }
 }
 
-async function doTidy(): Promise<void> {
+async function doTidy(unzonedOnly = false): Promise<void> {
   const check = await invoke<{ ready: boolean; configPath: string }>("status");
   if (!check.ready) {
     toast("还没有填 API key", "在设置里填一次就好", {
@@ -801,9 +948,12 @@ async function doTidy(): Promise<void> {
   toast(first ? "正在读桌面，判断该分成哪些区" : "正在整理");
 
   try {
-    const result = await invoke<Zones>("run_tidy");
+    const result = await invoke<Zones>("run_tidy", { unzonedOnly });
     stored = result.zones;
     pinned = new Set(result.pinned ?? []);
+    // The backend has just written the same stamp to disk; taking it locally
+    // saves a round trip and keeps the panel honest until the next restart.
+    lastTidy = Date.now();
     zone = 0;
     tile = 0;
     paint();
@@ -882,12 +1032,11 @@ window.addEventListener("keydown", (e) => {
 
   switch (e.key) {
     case "ArrowRight":
-      e.preventDefault();
-      moveTile(1);
-      return;
     case "ArrowLeft":
+    case "ArrowUp":
+    case "ArrowDown":
       e.preventDefault();
-      moveTile(-1);
+      moveTile(e.key);
       return;
     case "Tab":
       e.preventDefault();
@@ -907,6 +1056,12 @@ window.addEventListener("keydown", (e) => {
   }
 });
 
+// The grid is `auto-fill`, so a resized window silently changes the column count
+// under the keyboard. Re-measuring is cheaper than repainting every tile.
+window.addEventListener("resize", () => {
+  cols = measureCols();
+});
+
 queryEl.addEventListener("input", () => {
   pick = 0;
   paintResults();
@@ -919,6 +1074,8 @@ el("setsave").addEventListener("click", () => void saveSettings());
 el("setcancel").addEventListener("click", closeSettings);
 autoEl.addEventListener("click", () => autoEl.classList.toggle("on"));
 el("addzone").addEventListener("click", addZone);
+el("sethiddenrestore").addEventListener("click", () => void setHidden(new Set(), "恢复失败"));
+tidyUnzonedEl.addEventListener("click", () => void doTidy(true));
 
 // Applied the moment it is clicked rather than on save: a background treatment
 // can only be judged by looking at it.
@@ -961,20 +1118,16 @@ window.addEventListener("mousedown", (e) => {
 window.addEventListener("contextmenu", (e) => {
   e.preventDefault();
   const onControl = (e.target as HTMLElement).closest(
-    ".tile, .tab, .pill, .panel, #hero, #ctx, .resrow, #left, #right, button, input",
+    ".tile, .tab, .pill, .panel, #hero, #status, #ctx, .resrow, button, input",
   );
   if (!onControl) openStageMenu(e.clientX, e.clientY);
 });
-el("left").addEventListener("click", () => {
-  railEl.scrollLeft -= 560;
-});
-el("right").addEventListener("click", () => {
-  railEl.scrollLeft += 560;
-});
-
 // ---------- lifecycle ----------
 
 function tickClock(): void {
+  // The status panel's "上次整理 X 前" ages on its own, so it rides the clock
+  // rather than waiting for the next repaint to notice.
+  statusWhenEl.textContent = sinceTidy(lastTidy, Date.now()) ?? "";
   const now = new Date();
   clockEl.textContent = `${String(now.getHours()).padStart(2, "0")}:${String(
     now.getMinutes(),
@@ -1187,7 +1340,8 @@ async function nextStep(): Promise<void> {
     // The suggestion runs while step 1 is on screen; its outcome decides whether
     // we advance to the review step or fall back to it empty.
     try {
-      const result = await invoke<Zones>("run_tidy");
+      // First run has no zones yet, so this is the 分区建议 over everything.
+      const result = await invoke<Zones>("run_tidy", { unzonedOnly: false });
       stored = result.zones;
       paint();
     } catch (err) {
@@ -1308,7 +1462,9 @@ async function load(): Promise<void> {
       }
     });
 
-    const s = await invoke<{ onboarded: boolean }>("status");
+    const s = await invoke<{ onboarded: boolean; lastTidy: number }>("status");
+    lastTidy = s.lastTidy;
+    paintStatus();
     if (!s.onboarded) {
       openFirst();
       // First run is the one moment the surface needs the keyboard before the
@@ -1316,7 +1472,7 @@ async function load(): Promise<void> {
       void invoke("grab_focus");
     }
   } catch (err) {
-    railMetaEl.textContent = "扫描失败";
+    summaryEl.textContent = "扫描失败";
     console.error(err);
   }
 }

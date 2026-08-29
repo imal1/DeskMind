@@ -54,6 +54,7 @@ fn remove_target(path: String) -> Result<Vec<targets::LaunchTarget>, String> {
     let mut stored = zones::load();
     stored.added.retain(|p| p != &path);
     stored.pinned.retain(|p| p != &path);
+    stored.hidden.retain(|p| p != &path);
     for zone in &mut stored.zones {
         zone.items.retain(|p| p != &path);
     }
@@ -69,15 +70,25 @@ fn launch(path: String) -> Result<(), String> {
     opener::open(&path).map_err(|e| e.to_string())
 }
 
-/// Opens the folder a target lives in. Deliberately opens the parent rather than
-/// revealing-and-selecting: `opener::open` is already proven here, and "打开所在
-/// 文件夹" is exactly what opening the parent does.
+/// Opens the folder a target lives in with the target itself selected — "打开文件
+/// 位置", the same thing the shell's own menu does.
+///
+/// `raw_arg` and not `arg`: explorer wants `/select,<path>` as one token it parses
+/// itself, and Rust's argument escaping wraps any path containing a space in
+/// quotes that explorer then reads as part of the path — landing the user in
+/// Documents instead of on their file.
 #[tauri::command]
 fn reveal(path: String) -> Result<(), String> {
-    let parent = std::path::Path::new(&path)
-        .parent()
-        .ok_or_else(|| format!("{path} 没有上层目录"))?;
-    opener::open(parent).map_err(|e| e.to_string())
+    use std::os::windows::process::CommandExt;
+
+    if !std::path::Path::new(&path).exists() {
+        return Err(format!("{path} 已经不在了"));
+    }
+    std::process::Command::new("explorer")
+        .raw_arg(format!("/select,\"{path}\""))
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| e.to_string())
 }
 
 /// Returns a `path -> data:image/png;base64,…` map. Paths whose icon could not
@@ -141,6 +152,8 @@ struct Status {
     ready: bool,
     onboarded: bool,
     config_path: String,
+    /// Milliseconds since the epoch, or 0 for "never tidied".
+    last_tidy: u64,
 }
 
 #[tauri::command]
@@ -149,6 +162,7 @@ fn status() -> Status {
     Status {
         ready: secrets::has_key(),
         onboarded: cfg.onboarded,
+        last_tidy: cfg.last_tidy,
         config_path: config::path()
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_default(),
@@ -232,19 +246,44 @@ fn read_zones() -> zones::Zones {
 
 #[tauri::command]
 fn write_zones(mut value: zones::Zones) -> Result<(), String> {
-    // The webview edits zones and pins and knows nothing about `added`, so it
-    // sends the field back missing every time. Taking it from disk instead of
-    // from the round trip is what stops the first zone edit after a drop from
-    // erasing the dropped target.
-    value.added = zones::load().added;
+    // The webview edits zones and pins and knows nothing about `added` or
+    // `hidden`, so it sends those fields back missing every time. Taking them from
+    // disk instead of from the round trip is what stops the first zone edit after
+    // a drop from erasing the dropped target, or after a hide from putting every
+    // hidden target back.
+    let stored = zones::load();
+    value.added = stored.added;
+    value.hidden = stored.hidden;
     zones::save(&value)
+}
+
+/// Replaces the hidden list. Hiding takes a launch target off the desktop grid
+/// and nothing more: it stays searchable, stays launchable, and its file is never
+/// touched (ADR 0004). Restoring everything is the same call with an empty list.
+#[tauri::command]
+fn write_hidden(paths: Vec<String>) -> Result<(), String> {
+    let mut stored = zones::load();
+    stored.hidden = paths;
+    zones::save(&stored)
+}
+
+/// Records that a tidy just succeeded, so the status panel can say how long ago.
+/// A failure to write the timestamp is not worth failing the tidy over — the
+/// zones landed, which is the part the user asked for.
+fn stamp_tidy() {
+    let mut cfg = config::load();
+    cfg.last_tidy = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    let _ = config::save(&cfg);
 }
 
 /// Runs a tidy. With no zones yet this asks the model to propose the zone set
 /// (the first-run suggestion of ADR 0009); afterwards it may only place targets
 /// into zones that already exist.
 #[tauri::command]
-async fn run_tidy() -> Result<zones::Zones, String> {
+async fn run_tidy(unzoned_only: bool) -> Result<zones::Zones, String> {
     let cfg = config::load();
     let key = secrets::api_key();
     if key.trim().is_empty() {
@@ -255,13 +294,28 @@ async fn run_tidy() -> Result<zones::Zones, String> {
     // like any other, and leaving it out would mean a tidy quietly refuses to
     // file the things they added by hand.
     let found = list_targets();
-    let names: Vec<String> = found.iter().map(|t| t.name.clone()).collect();
     let name_to_path: HashMap<String, String> = found
         .iter()
         .map(|t| (t.name.clone(), t.path.clone()))
         .collect();
 
     let existing = zones::load();
+
+    // The status panel's button tidies the leftovers only, so the model is asked
+    // about those and nothing else: an unplaced answer leaves a target where it
+    // was (see `zones::apply`), which is exactly what the rest of the desktop
+    // should get. Sending everything would re-file zones the user has already
+    // corrected by hand.
+    let filed: std::collections::HashSet<&String> =
+        existing.zones.iter().flat_map(|z| &z.items).collect();
+    let names: Vec<String> = found
+        .iter()
+        .filter(|t| !unzoned_only || !filed.contains(&t.path))
+        .map(|t| t.name.clone())
+        .collect();
+    if names.is_empty() {
+        return Ok(existing);
+    }
 
     if existing.zones.is_empty() {
         let proposed = tidy::suggest(&cfg, &key, &names).await?;
@@ -280,8 +334,10 @@ async fn run_tidy() -> Result<zones::Zones, String> {
             // rebuilt zone set never silently drops the user's marks.
             pinned: existing.pinned.clone(),
             added: existing.added.clone(),
+            hidden: existing.hidden.clone(),
         };
         zones::save(&built)?;
+        stamp_tidy();
         return Ok(built);
     }
 
@@ -289,6 +345,7 @@ async fn run_tidy() -> Result<zones::Zones, String> {
     let decision = tidy::assign(&cfg, &key, &names, &zone_names).await?;
     let applied = zones::apply(&existing, &decision, &name_to_path);
     zones::save(&applied)?;
+    stamp_tidy();
     Ok(applied)
 }
 
@@ -315,6 +372,7 @@ pub fn run() {
             finish_onboarding,
             read_zones,
             write_zones,
+            write_hidden,
             run_tidy
         ])
         .setup(|app| {

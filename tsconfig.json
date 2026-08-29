@@ -10,5 +10,8 @@
     "skipLibCheck": true,
     "isolatedModules": true
   },
-  "include": ["src"]
+  "include": ["src"],
+  // The tests run under `bun test`, which brings its own globals; typechecking
+  // them here would mean pulling bun's type package in just to see them.
+  "exclude": ["src/**/*.test.ts"]
 }
