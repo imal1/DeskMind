@@ -377,9 +377,15 @@
   .tile.on {
     background: rgba(255, 255, 255, 0.15);
     border-color: rgba(255, 255, 255, 0.24);
-    transform: perspective(900px)
-               rotateX(calc(var(--py, 0) * -6deg))
-               rotateY(calc(var(--px, 0) * 7deg))
+    /* Twice the angles issue #9's checklist named, at a viewing distance a third
+       shorter. Those numbers were written against the mock, whose tiles are much
+       bigger than the 140x85 auto-fill gives here: at 900px and ±3° the two edges
+       of a tile this size differ by about half a percent, which is a lean nobody
+       can see. Doubled and brought closer it reads, and stops there — the next
+       step up was a card that swings rather than leans. */
+    transform: perspective(500px)
+               rotateX(calc(var(--py, 0) * -12deg))
+               rotateY(calc(var(--px, 0) * 14deg))
                translateY(-4px);
     box-shadow: 0 22px 50px -24px rgba(0, 0, 0, .9);
   }
