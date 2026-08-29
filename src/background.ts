@@ -2,8 +2,13 @@
  * The scene layer — effects D and B of ADR 0016.
  *
  * One fullscreen shader composes everything behind the interface: the wallpaper,
- * slowly drifting fog tinted by the wallpaper's own colour, and refractive glass
- * for panels floating above it.
+ * thin bands of light drifting across it, and refractive glass for the panels
+ * floating above.
+ *
+ * There used to be three treatments to choose between — bands, fog, and none at
+ * all. There is one now, the one modelled on the iOS/tvOS 27 chrome: clear rather
+ * than frosted, with the lift on the panels instead of a dimming of everything
+ * behind them.
  *
  * The glass refracts the **live interface**, captured through HTML-in-Canvas: the
  * tiles, text and rail under a panel bend with it. An earlier version composed
@@ -23,13 +28,6 @@ import { invoke } from "@tauri-apps/api/core";
 import { createCapture, type Capture } from "./capture";
 
 type Occlusion = { occluded: boolean };
-
-/**
- * Background treatments offered in settings. They differ in more than the panel
- * rim: each also decides how the wallpaper itself is veiled — highlight lifts it,
- * fog pushes it back, none leaves it alone and drops the glass entirely.
- */
-export type EffectName = "highlight" | "fog" | "none";
 
 export type GlassRect = {
   x: number;
@@ -59,9 +57,7 @@ uniform float glassRadius[MAX_GLASS];
 uniform int glassCount;
 uniform float glassAmount;
 uniform vec3 veil;       // darkening alpha at the bottom, middle and top
-uniform float dim;       // scrim strength while a panel is up
 uniform float glassOnly; // 1 for the layer that draws nothing but the glass
-uniform int effect;      // 0 none, 1 fog, 2 highlight
 uniform sampler2D ui;    // the live interface, captured through HTML-in-Canvas
 uniform float hasUi;     // 0 when the capture is unavailable
 
@@ -104,48 +100,28 @@ vec3 scene(vec2 uv, float lod) {
   vec2 p = vec2(uv.x * (res.x / res.y), uv.y);
   vec3 col = base;
 
-  if (effect == 1) {
-    // Fog: soft drifting volume, tinted by the wallpaper.
-    vec2 warp = vec2(fbm(p * 1.6 + time * 0.014), fbm(p * 1.6 - time * 0.011));
-    float f = fbm(p * 2.2 + warp * 1.5 + time * 0.006);
-
-    vec3 cool = accent * 0.72;
-    vec3 warm = mix(accent, vec3(0.86, 0.62, 0.72), 0.42);
-    vec3 fog = mix(cool, warm, smoothstep(0.25, 0.85, f)) * (0.4 + f * 0.6);
-
-    // Heaviest at the edges, thin through the middle.
-    float edge = smoothstep(0.0, 0.55, abs(uv.y - 0.5) * 2.0);
-    col = mix(base, fog, (0.10 + f * 0.30) * (0.55 + edge * 0.45));
-  } else if (effect == 2) {
-    // Highlight: crossing bands of light that drift, sharpened so they stay thin
-    // and clean. Where fog adds volume, this adds sheen — the wallpaper is left
-    // mostly alone and only catches the light.
-    float a = sin((p.x * 1.2 + p.y * 0.6) * 2.4 + time * 0.25) * 0.5 + 0.5;
-    float b = sin((p.x * -0.8 + p.y * 1.4) * 1.7 - time * 0.19) * 0.5 + 0.5;
-    float s = pow(a * b, 6.0);
-    // A slow wander so the bands never sit still enough to look like a texture.
-    s *= 0.7 + 0.3 * fbm(p * 0.9 + time * 0.02);
-    col = base + mix(vec3(1.0), accent, 0.45) * s * 0.5;
-  }
+  // Crossing bands of light that drift, sharpened so they stay thin and clean.
+  // Sheen rather than volume: the wallpaper is left mostly alone and only catches
+  // the light.
+  float a1 = sin((p.x * 1.2 + p.y * 0.6) * 2.4 + time * 0.25) * 0.5 + 0.5;
+  float b1 = sin((p.x * -0.8 + p.y * 1.4) * 1.7 - time * 0.19) * 0.5 + 0.5;
+  float s = pow(a1 * b1, 6.0);
+  // A slow wander so the bands never sit still enough to look like a texture.
+  s *= 0.7 + 0.3 * fbm(p * 0.9 + time * 0.02);
+  col = base + mix(vec3(1.0), accent, 0.45) * s * 0.5;
 
   // The veil belongs in here rather than in a DOM layer above the canvas: it is
   // part of the backdrop, so the glass has to refract it along with everything
   // else. A CSS layer stacked on top would sit over the refraction and hide it.
   //
-  // Each mode veils differently, which is most of what separates them:
-  //   fog       a dark wash, the wallpaper sits back
-  //   highlight a luminous one, the wallpaper is lifted rather than pushed down
-  //   none      nothing at all
+  // Dark and light-handed, at 0.55 of what the gradient asks for. Brightening the
+  // whole wallpaper was glaring, and the lift belongs on the panels and the rail
+  // rather than on everything at once.
   float a = uv.y < 0.5
     ? mix(veil.x, veil.y, smoothstep(0.0, 0.5, uv.y))
     : mix(veil.y, veil.z, smoothstep(0.5, 1.0, uv.y));
 
-  if (effect == 0) return col;
-  // Highlight keeps a veil, but a dark and light-handed one. Brightening the
-  // whole wallpaper was glaring, and the lift belongs on the panels and the rail
-  // rather than on everything at once.
-  float scale = effect == 2 ? 0.55 : 1.0;
-  return mix(col, vec3(0.024, 0.027, 0.043), a * scale);
+  return mix(col, vec3(0.024, 0.027, 0.043), a * 0.55);
 }
 
 /// What the glass refracts.
@@ -167,7 +143,7 @@ float sdRoundBox(vec2 p, vec2 half_size, float r) {
 
 /// Opaque once we own the wallpaper; translucent while we do not, so the CSS
 /// wallpaper underneath still shows and a failed texture upload degrades to
-/// "fog over the picture" rather than to a black screen.
+/// a wash over the picture rather than to a black screen.
 float sceneAlpha() { return hasWallpaper > 0.5 ? 1.0 : 0.55; }
 
 void main() {
@@ -175,10 +151,9 @@ void main() {
   vec2 uv = frag / res;
 
   // The backdrop layer never draws glass; the glass layer never draws anything
-  // else. Two passes, because the scrim has to darken the interface while the
-  // glass has to sit above the scrim — one layer cannot be on both sides of it.
-  // 纯净 has no glass either — the panels fall back to their own CSS backdrop.
-  if (glassAmount < 0.01 || glassOnly < 0.5 || effect == 0) {
+  // else. Two passes, because the glass has to sit above the backdrop — one layer
+  // cannot be on both sides of it.
+  if (glassAmount < 0.01 || glassOnly < 0.5) {
     if (glassOnly > 0.5) { outColor = vec4(0.0); return; }
     outColor = vec4(scene(uv, 0.0), sceneAlpha());
     return;
@@ -251,12 +226,8 @@ void main() {
   col.g = behind((frag + offset) / res, lod).g;
   col.b = behind((frag + offset * 0.97) / res, lod).b;
 
-  // The scrim's darkening applied here too, so the glass sits in the same light
-  // as everything around it rather than glowing out of a dimmed screen.
-  // Highlight dims nothing: the lift lives on the panel itself, so darkening the
-  // rest of the screen behind it would undo the point.
-  float scrim = effect == 2 ? 0.0 : dim;
-  col *= 1.0 - scrim * 0.45;
+  // Nothing dims behind an open panel: the lift lives on the panel itself, so
+  // darkening the rest of the screen would undo the point of it.
 
   // Darkening ramps with depth: light at the rim, heavy through the middle.
   //
@@ -398,7 +369,7 @@ function makeLayer(zIndex: number, glassOnly: boolean, after: Element): Layer | 
   gl.useProgram(program);
   const names = [
     "res", "time", "accent", "wallpaper", "hasWallpaper", "wallAspect",
-    "glassRect[0]", "glassRadius[0]", "glassCount", "glassAmount", "veil", "dim", "glassOnly", "effect", "ui", "hasUi",
+    "glassRect[0]", "glassRadius[0]", "glassCount", "glassAmount", "veil", "glassOnly", "ui", "hasUi",
   ];
   const u: Record<string, WebGLUniformLocation | null> = {};
   for (const n of names) u[n] = gl.getUniformLocation(program, n);
@@ -417,10 +388,8 @@ function makeLayer(zIndex: number, glassOnly: boolean, after: Element): Layer | 
   gl.uniform1f(u.wallAspect!, 1.6);
   gl.uniform1f(u.glassAmount!, 0);
   gl.uniform1i(u.glassCount!, 0);
-  gl.uniform1f(u.dim!, 0);
   gl.uniform3f(u.veil!, 0.5, 0.28, 0.56);
   gl.uniform1f(u.glassOnly!, glassOnly ? 1 : 0);
-  gl.uniform1i(u.effect!, 2);
   gl.uniform1i(u.ui!, 1);
   gl.uniform1f(u.hasUi!, 0);
   gl.enable(gl.BLEND);
@@ -444,7 +413,6 @@ export type Scene = {
   /** Pass an empty list to dissolve the glass. CSS pixels, y from the top. */
   setGlass(rects: GlassRect[]): void;
   setVeil(brightness: number): void;
-  setEffect(name: EffectName): void;
   /** Any interaction with our own interface proves somebody is looking. */
   wake(): void;
 };
@@ -495,9 +463,8 @@ export function startBackground(watchOcclusion: boolean): Scene | null {
   let lastCapture = -1e9;
 
   /**
-   * Idle frame budget. The fog drifts at 0.014 radians a second and the highlight
-   * bands at 0.25 — at that speed 15 frames a second is not a compromise, it is
-   * more than the motion can use. Measured on a 3440x1440 screen with
+   * Idle frame budget. The bands drift at 0.25 radians a second — at that speed
+   * 15 frames a second is not a compromise, it is more than the motion can use. Measured on a 3440x1440 screen with
    * `scripts/measure-gpu.ps1`: 23.5% of the GPU at the monitor's rate, 3.2% at
    * 30, 1.8% here — which is the first number inside ADR 0016's 1-2%.
    */
@@ -613,7 +580,6 @@ export function startBackground(watchOcclusion: boolean): Scene | null {
         gl.uniform1i(u.glassCount!, radii.length);
       }
       gl.uniform1f(u.glassAmount!, amount);
-      gl.uniform1f(u.dim!, amount);
       gl.uniform2f(u.res!, w, h);
       gl.uniform1f(u.time!, now / 1000);
       gl.clearColor(0, 0, 0, 0);
@@ -692,12 +658,6 @@ export function startBackground(watchOcclusion: boolean): Scene | null {
       };
       img.onerror = () => console.error("壁纸纹理加载失败", url);
       img.src = url;
-    },
-    setEffect(name: EffectName): void {
-      const code = name === "none" ? 0 : name === "highlight" ? 2 : 1;
-      forEach((l) => l.gl.uniform1i(l.u.effect!, code));
-      hidden = false;
-      resume();
     },
     wake(): void {
       hidden = false;

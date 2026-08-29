@@ -16,8 +16,6 @@ pub struct Config {
     pub api_key: String,
     pub model: String,
     pub base_url: String,
-    /// Background treatment: `fog`, `highlight` or `none`.
-    pub effect: String,
     /// Set once the user has been through the first-run flow, so it never shows
     /// twice. Distinct from "has a key": someone may finish onboarding by
     /// declining the AI entirely.
@@ -37,7 +35,6 @@ impl Default for Config {
             // matter of changing these two strings.
             model: "deepseek-chat".into(),
             base_url: "https://api.deepseek.com/chat/completions".into(),
-            effect: "highlight".into(),
             onboarded: false,
             last_tidy: 0,
         }

@@ -28,17 +28,9 @@
   }
 
   @keyframes dmdrift { 0%, 100% { transform: translate3d(0,0,0) scale(1); } 50% { transform: translate3d(3%,-2%,0) scale(1.08); } }
-  /* Keeps the centring translate the panels are positioned by. The old version
-     animated `translateY` alone, which replaced `translateX(-50%)` outright and
-     left the panel sitting half a width right of centre for as long as the
-     animation's fill kept the override alive. */
-  @keyframes dmslide { from { opacity: 0; transform: translateX(-50%) translateY(10px); } to { opacity: 1; transform: translateX(-50%) translateY(0); } }
   @keyframes dmToast { from { opacity: 0; transform: translateX(-50%) translateY(16px) scale(.97); } to { opacity: 1; transform: translateX(-50%) translateY(0) scale(1); } }
   @keyframes dmRise { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: none; } }
   @keyframes dmBurst { from { opacity: .6; transform: translate(-50%, -50%) scale(.5); } to { opacity: 0; transform: translate(-50%, -50%) scale(2.2); } }
-  @keyframes dmpop { from { opacity: 0; transform: translate(-50%, -50%) scale(.98); } to { opacity: 1; transform: translate(-50%, -50%) scale(1); } }
-  @keyframes dmmenu { from { opacity: 0; transform: scale(.96) translateY(-4px); } to { opacity: 1; transform: scale(1) translateY(0); } }
-  @keyframes dmbreath { 0%, 100% { opacity: .5; transform: scale(1); } 50% { opacity: .9; transform: scale(1.06); } }
 
   html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; }
   body {
@@ -100,8 +92,10 @@
   #wordmark { font-size: 15px; font-weight: 400; letter-spacing: .1em; color: var(--ink-86); }
   #tabs {
     display: flex; align-items: center; gap: 2px; padding: 4px; border-radius: 999px;
-    background: var(--glass-bg); backdrop-filter: var(--glass);
-    border: 1px solid var(--glass-line);
+    background: rgba(255, 255, 255, 0.12);
+    backdrop-filter: blur(12px) saturate(1.5) brightness(1.12);
+    border: 1px solid rgba(255, 255, 255, 0.26);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.34);
     overflow-x: auto; scrollbar-width: none; max-width: 46vw;
   }
   #tabs::-webkit-scrollbar { display: none; }
@@ -119,16 +113,32 @@
     padding: 7px 14px; border-radius: 999px; white-space: nowrap;
     font-size: 12px; font-weight: 300;
     color: rgba(255, 255, 255, 0.75);
-    background: rgba(255, 255, 255, 0.04);
-    border: 1px solid rgba(255, 255, 255, 0.14);
+    background: rgba(255, 255, 255, 0.12);
+    border: 1px solid rgba(255, 255, 255, 0.26);
+    backdrop-filter: blur(12px) saturate(1.5) brightness(1.12);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.34);
     transition: all .35s var(--ease);
   }
   .pill:hover { color: #fff; background: rgba(255, 255, 255, 0.1); }
-  #tidybtn { color: var(--accent-ink); background: var(--accent); border-color: transparent; font-weight: 400; }
+  #tidybtn {
+    color: var(--accent-ink); background: var(--accent); border-color: transparent; font-weight: 400;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.4);
+  }
   #tidybtn:hover { filter: brightness(1.08); background: var(--accent); color: var(--accent-ink); }
   #tidybtn:disabled { opacity: .55; cursor: default; }
-  #searchbtn { display: flex; align-items: center; gap: 9px; background: rgba(255, 255, 255, 0.07); border-color: rgba(255, 255, 255, 0.08); }
-  #searchbtn .key { font-size: 10.5px; padding: 2px 7px; border-radius: 999px; background: var(--chip); color: var(--ink-50); }
+  /* Spelled out by id rather than left to `.pill`: both carry id rules of their
+     own, and an id beats a class every time. */
+  #searchbtn, #setbtn {
+    background: rgba(255, 255, 255, 0.14);
+    border-color: rgba(255, 255, 255, 0.28);
+    color: rgba(255, 255, 255, 0.88);
+  }
+  #searchbtn { display: flex; align-items: center; gap: 9px; }
+  #searchbtn:hover, #setbtn:hover { background: rgba(255, 255, 255, 0.22); color: #fff; }
+  #searchbtn .key {
+    font-size: 10.5px; padding: 2px 7px; border-radius: 999px;
+    background: rgba(255, 255, 255, 0.22); color: rgba(255, 255, 255, 0.8);
+  }
   #summary { font-size: 12.5px; color: var(--ink-50); }
   #clock { font-size: 15px; letter-spacing: .04em; color: rgba(255, 255, 255, 0.8); }
 
@@ -195,9 +205,10 @@
   #status {
     flex: 0 1 clamp(260px, 24vw, 340px);
     padding: 18px 20px 20px; border-radius: 20px;
-    background: rgba(255, 255, 255, 0.05);
-    border: 1px solid rgba(255, 255, 255, 0.09);
-    backdrop-filter: blur(20px);
+    background: rgba(255, 255, 255, 0.09);
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    backdrop-filter: blur(12px) saturate(1.5) brightness(1.12);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.3);
   }
   #statushead { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
   #statustitle { font-size: 12px; font-weight: 400; letter-spacing: .15em; color: var(--ink-50); }
@@ -239,68 +250,6 @@
     mask-image: linear-gradient(180deg, transparent 0, #000 22px, #000 calc(100% - 40px), transparent 100%);
   }
   #grid::-webkit-scrollbar { display: none; }
-  /* The tiles and the top controls take their treatment from the chosen effect.
-     Highlight follows iOS 27's navigation chrome: clear rather than frosted,
-     buttons that read as lit glass. */
-  [data-effect="highlight"] .tile {
-    background: rgba(255, 255, 255, 0.10);
-    border-color: rgba(255, 255, 255, 0.20);
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.32);
-  }
-  [data-effect="highlight"] .tile.on {
-    background: rgba(255, 255, 255, 0.20);
-    border-color: rgba(255, 255, 255, 0.42);
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.5), 0 22px 50px -24px rgba(0, 0, 0, .8);
-  }
-  [data-effect="highlight"] #status {
-    background: rgba(255, 255, 255, 0.09);
-    border-color: rgba(255, 255, 255, 0.2);
-    backdrop-filter: blur(12px) saturate(1.5) brightness(1.12);
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.3);
-  }
-  [data-effect="highlight"] #tabs,
-  [data-effect="highlight"] .pill {
-    background: rgba(255, 255, 255, 0.12);
-    border-color: rgba(255, 255, 255, 0.26);
-    backdrop-filter: blur(12px) saturate(1.5) brightness(1.12);
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.34);
-  }
-  /* Spelled out by id, not just `.pill`: #searchbtn and #setbtn carry their own
-     id rules, and an id beats an attribute-plus-class every time. */
-  [data-effect="highlight"] #searchbtn,
-  [data-effect="highlight"] #setbtn {
-    background: rgba(255, 255, 255, 0.14);
-    border-color: rgba(255, 255, 255, 0.28);
-    color: rgba(255, 255, 255, 0.88);
-    backdrop-filter: blur(12px) saturate(1.5) brightness(1.12);
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.34);
-  }
-  [data-effect="highlight"] #searchbtn:hover,
-  [data-effect="highlight"] #setbtn:hover { background: rgba(255, 255, 255, 0.22); color: #fff; }
-  [data-effect="highlight"] #searchbtn .key { background: rgba(255, 255, 255, 0.22); color: rgba(255, 255, 255, 0.8); }
-  [data-effect="highlight"] #tidybtn { background: var(--accent); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.4); }
-
-  [data-effect="none"] #searchbtn,
-  [data-effect="none"] #setbtn {
-    backdrop-filter: none;
-    background: rgba(0, 0, 0, 0.22);
-    border-color: rgba(255, 255, 255, 0.12);
-  }
-
-  /* 纯净: no chrome at all, just the wallpaper and the content on it. */
-  [data-effect="none"] #status {
-    background: rgba(0, 0, 0, 0.22);
-    backdrop-filter: none;
-    border-color: rgba(255, 255, 255, 0.12);
-  }
-  [data-effect="none"] #tabs,
-  [data-effect="none"] .pill {
-    backdrop-filter: none;
-    background: rgba(0, 0, 0, 0.22);
-    border-color: rgba(255, 255, 255, 0.12);
-  }
-  [data-effect="none"] #tidybtn { background: var(--accent); }
-
   .tile {
     position: relative;
     /* 5:3, from the design. The face below is taken out of flow so that this
@@ -311,8 +260,9 @@
     border-radius: 20px; overflow: hidden;
     /* Above the glow, which is a single element sharing the grid with them. */
     z-index: 1;
-    background: rgba(255, 255, 255, 0.06);
-    border: 1px solid rgba(255, 255, 255, 0.08);
+    background: rgba(255, 255, 255, 0.10);
+    border: 1px solid rgba(255, 255, 255, 0.20);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.32);
     transition: transform .34s var(--ease), background .3s var(--ease);
   }
   /* Fills the cell rather than sizing it. A name too long for the space is
@@ -375,8 +325,8 @@
      are set from a pointer and from nothing else: an arrow key has no position
      to lean by, so a keyboard selection lands flat. */
   .tile.on {
-    background: rgba(255, 255, 255, 0.15);
-    border-color: rgba(255, 255, 255, 0.24);
+    background: rgba(255, 255, 255, 0.20);
+    border-color: rgba(255, 255, 255, 0.42);
     /* Twice the angles issue #9's checklist named, at a viewing distance held to
        2.86 tile widths rather than to a fixed 900px.
 
@@ -394,7 +344,7 @@
                rotateX(calc(var(--py, 0) * -12deg))
                rotateY(calc(var(--px, 0) * 14deg))
                translateY(-4px);
-    box-shadow: 0 22px 50px -24px rgba(0, 0, 0, .9);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.5), 0 22px 50px -24px rgba(0, 0, 0, .8);
   }
   .tile.dragging { opacity: .4; }
   .tileico {
@@ -428,11 +378,10 @@
   }
 
   /* Floating surfaces */
-  #scrim { position: absolute; inset: 0; z-index: 20; background: rgba(6, 7, 10, 0.5); backdrop-filter: blur(3px); }
-  /* Highlight lifts the panel instead of pushing the rest of the screen down, so
+  /* The panel is lifted rather than the rest of the screen pushed down, so
      nothing dims behind it. The box stays — it is still what a click outside a
-     panel lands on — it just stops painting. */
-  [data-effect="highlight"] #scrim { background: transparent; backdrop-filter: none; }
+     panel lands on — it just never paints. */
+  #scrim { position: absolute; inset: 0; z-index: 20; }
   .panel {
     position: absolute; left: 50%; z-index: 21;
     border-radius: 24px;
@@ -470,15 +419,6 @@
      the delay this removes. */
   @keyframes dmfade { from { opacity: 0; } to { opacity: 1; } }
   #search, #settings, #first, #ctx { animation: dmfade .2s var(--ease) both; }
-  /* 纯净 draws no glass, so there is no rectangle to outrun and the panels may
-     move as they arrive. Keyed off the treatment rather than off `.glassed`,
-     which the shader sets: two of the open paths read the panel's box before
-     that class lands, so a rule waiting on it would start the moving animation
-     and swap mid-flight. Erring towards the fade costs a slide nobody misses. */
-  [data-effect="none"] #search,
-  [data-effect="none"] #settings { animation: dmslide .3s var(--ease) both; }
-  [data-effect="none"] #first { animation: dmpop .35s var(--ease) both; }
-  [data-effect="none"] #ctx { animation: dmmenu .18s var(--ease) both; }
 
   #search { top: 14vh; transform: translateX(-50%); width: min(640px, 84vw); overflow: hidden; }
   #searchbar { display: flex; align-items: center; gap: 14px; padding: 19px 24px; }
@@ -539,18 +479,6 @@
   .switch.on { background: var(--accent); border-color: transparent; }
   .knob { width: 18px; height: 18px; border-radius: 50%; background: #fff; transition: transform .3s var(--ease); }
   .switch.on .knob { transform: translateX(18px); }
-  .segmented {
-    display: flex; gap: 3px; padding: 4px; border-radius: 999px;
-    background: rgba(255, 255, 255, 0.05);
-    border: 1px solid rgba(255, 255, 255, 0.1);
-  }
-  .segmented button {
-    flex: 1; padding: 8px 0; border-radius: 999px;
-    font-size: 12.5px; font-weight: 300; color: rgba(255, 255, 255, 0.55);
-    transition: all .35s var(--ease);
-  }
-  .segmented button:hover { color: var(--ink-86); }
-  .segmented button.on { background: var(--accent); color: var(--accent-ink); font-weight: 400; }
   #setzones { display: flex; flex-direction: column; gap: 6px; }
   .zrow {
     display: flex; align-items: center; gap: 10px;
@@ -821,13 +749,8 @@
       </div>
 
       <div class="field">
-        <div class="flabel">背景特效</div>
-        <div id="seteffect" class="segmented">
-          <button data-effect="highlight">高亮</button>
-          <button data-effect="fog">雾影</button>
-          <button data-effect="none">纯净</button>
-        </div>
-        <div class="fhint">高亮：光带掠过壁纸，背景提亮，面板是极清玻璃。雾影：缓慢流动的雾，背景压暗。纯净：只有壁纸，没有遮罩也没有玻璃。被遮挡时都会停止绘制。</div>
+        <div class="flabel">背景</div>
+        <div class="fhint">光带缓慢掠过壁纸，面板是极清玻璃。被遮挡时停止绘制。</div>
         <div class="fhint" id="seteffectstate"></div>
       </div>
 

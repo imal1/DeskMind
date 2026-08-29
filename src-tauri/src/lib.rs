@@ -195,7 +195,6 @@ struct Settings {
     has_key: bool,
     model: String,
     base_url: String,
-    effect: String,
     autostart: bool,
 }
 
@@ -206,7 +205,6 @@ fn read_settings() -> Settings {
         has_key: secrets::has_key(),
         model: cfg.model,
         base_url: cfg.base_url,
-        effect: cfg.effect,
         autostart: autostart::enabled(),
     }
 }
@@ -219,7 +217,6 @@ fn write_settings(
     api_key: String,
     model: String,
     base_url: String,
-    effect: String,
     autostart_on: bool,
 ) -> Result<(), String> {
     if !api_key.trim().is_empty() {
@@ -231,9 +228,6 @@ fn write_settings(
     }
     if !base_url.trim().is_empty() {
         cfg.base_url = base_url.trim().to_string();
-    }
-    if matches!(effect.as_str(), "fog" | "highlight" | "none") {
-        cfg.effect = effect;
     }
     config::save(&cfg)?;
     autostart::set(autostart_on)

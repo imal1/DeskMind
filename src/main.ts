@@ -2,7 +2,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { rank } from "./match";
 import { deskStats, moveInGrid, scatterAt, sinceTidy, tiltAt, type ArrowKey } from "./desk";
-import { isSoftware, startBackground, type EffectName, type Scene } from "./background";
+import { isSoftware, startBackground, type Scene } from "./background";
 
 type LaunchTarget = {
   name: string;
@@ -686,14 +686,10 @@ type Settings = {
   hasKey: boolean;
   model: string;
   baseUrl: string;
-  effect: EffectName;
   autostart: boolean;
 };
 
-const effectEl = el("seteffect");
 const effectStateEl = el("seteffectstate");
-/** Held while the panel is open, applied live so the choice can be seen. */
-let effect: EffectName = "highlight";
 
 /**
  * Which of the two glass paths is actually running, in words, where the person
@@ -723,39 +719,12 @@ function paintEffectState(): void {
     return;
   }
 
-  effectStateEl.classList.toggle("degraded", !live);
-  if (effect === "none") {
-    effectStateEl.textContent = gpu || "纯净不画玻璃，这一档没有玻璃可验。";
-    effectStateEl.classList.toggle("degraded", gpu !== "");
-    return;
-  }
-
   const glass = live
     ? `玻璃在折射界面（ctx.${capture}），压暗 0.16→0.54。可以按标准验。`
     : "玻璃只折射壁纸：界面捕获拿不到，压暗换成轻档 0.06→0.26。" +
       "这一轮不值得验——先查 WebView2 有没有带上 --enable-blink-features=CanvasDrawElement。";
   effectStateEl.textContent = gpu ? `${glass} 另外${gpu}` : glass;
   effectStateEl.classList.toggle("degraded", !live || gpu !== "");
-}
-
-function paintEffect(): void {
-  for (const b of effectEl.querySelectorAll<HTMLButtonElement>("button")) {
-    b.classList.toggle("on", b.dataset.effect === effect);
-  }
-  paintEffectState();
-}
-
-/**
- * One place that applies a treatment everywhere: the shader, the chrome, and any
- * panel already on screen. The rail and the top controls are styled from CSS off
- * this attribute — they are DOM, not part of the scene the shader draws.
- */
-function applyEffect(name: EffectName): void {
-  effect = name;
-  document.body.dataset.effect = name;
-  paintEffect();
-  background?.setEffect(name);
-  refreshGlass();
 }
 
 const settingsEl = el("settings");
@@ -947,7 +916,7 @@ async function openSettings(): Promise<void> {
   modelEl.value = s.model;
   urlEl.value = s.baseUrl;
   autoEl.classList.toggle("on", s.autostart);
-  applyEffect(s.effect);
+  paintEffectState();
   setMsgEl.textContent = "";
   // Opening a panel of ours is proof somebody is looking, so the scene must not
   // stay parked waiting for the next occlusion poll — that was the several
@@ -980,7 +949,6 @@ async function saveSettings(): Promise<void> {
       apiKey: keyEl.value,
       model: modelEl.value,
       baseUrl: urlEl.value,
-      effect,
       autostartOn: autoEl.classList.contains("on"),
     });
     await commitZones(draft);
@@ -1354,13 +1322,6 @@ el("addzone").addEventListener("click", addZone);
 el("sethiddenrestore").addEventListener("click", () => void setHidden(new Set(), "恢复失败"));
 tidyUnzonedEl.addEventListener("click", () => void doTidy(true));
 
-// Applied the moment it is clicked rather than on save: a background treatment
-// can only be judged by looking at it.
-effectEl.addEventListener("click", (e) => {
-  const name = (e.target as HTMLElement).dataset.effect as EffectName | undefined;
-  if (!name) return;
-  applyEffect(name);
-});
 // One scrim serves the overlays, so it dismisses whichever is up — except the
 // first-run flow, which has its own exits.
 scrimEl.addEventListener("click", () => {
@@ -1433,14 +1394,6 @@ function refreshGlass(): void {
   const panels = [searchEl, settingsEl, ctxEl, firstEl].filter(
     (p) => !p.classList.contains("hide"),
   );
-
-  // 纯净 has no glass, so panels keep their own CSS backdrop instead of being
-  // thinned out for a refraction that will never be drawn behind them.
-  if (effect === "none") {
-    for (const p of panels) p.classList.remove("glassed");
-    background.setGlass([]);
-    return;
-  }
 
   background.setGlass(
     panels.map((p) => {
@@ -1605,7 +1558,6 @@ async function nextStep(): Promise<void> {
         apiKey: key,
         model: "",
         baseUrl: "",
-        effect: "",
         autostartOn: true,
       });
     } catch (err) {
@@ -1727,7 +1679,6 @@ async function load(): Promise<void> {
     // is not painted, so the launchpad's loop costs nothing while it is away.
     background = startBackground(true);
     void loadTheme();
-    void invoke<Settings>("read_settings").then((s) => applyEffect(s.effect));
 
     all = await invoke<LaunchTarget[]>("list_targets");
     await loadZones();
