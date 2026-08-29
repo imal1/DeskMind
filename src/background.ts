@@ -27,7 +27,21 @@
 import { invoke } from "@tauri-apps/api/core";
 import { createCapture, type Capture } from "./capture";
 
-type Occlusion = { occluded: boolean };
+/**
+ * The verdict and the reasoning behind it. Rust works all of this out; taking
+ * only the boolean threw away the half that says *why*, which is the half needed
+ * when the answer is wrong — and the answer can only be wrong while the desktop
+ * is covered, which is exactly when nobody can look at the screen to find out.
+ */
+type Occlusion = {
+  occluded: boolean;
+  /** Plain-language reason, set only when the verdict is "not covered". */
+  why: string;
+  /** Window class of whatever holds the foreground. */
+  frontClass: string;
+  frontRect: [number, number, number, number];
+  workArea: [number, number, number, number];
+};
 
 export type GlassRect = {
   x: number;
@@ -294,6 +308,28 @@ type Layer = {
  * discovered later as "it feels warm". Read `window.__dmRenderer` in devtools on
  * the desktop-layer window to check it.
  */
+/**
+ * Says so, once per change of mind, and leaves the latest probe on
+ * `window.__dmOcclusion`.
+ *
+ * ADR 0016's second power line — nothing drawn at all while covered — is the one
+ * claim that cannot be checked by looking, because checking it means covering the
+ * screen. So the run has to be readable afterwards: cover the desktop, take the
+ * measurement, then come back and read why the answer was what it was.
+ */
+let lastVerdict: boolean | null = null;
+function reportOcclusion(probe: Occlusion): void {
+  (window as unknown as { __dmOcclusion: Occlusion }).__dmOcclusion = probe;
+  if (probe.occluded === lastVerdict) return;
+  lastVerdict = probe.occluded;
+  console.info(
+    probe.occluded
+      ? `桌面层被遮挡，停止绘制。前台 ${probe.frontClass} ${probe.frontRect.join(",")}`
+      : `桌面层在画：${probe.why || "前台窗口没盖满工作区"}。` +
+        `前台 ${probe.frontClass || "—"} ${probe.frontRect.join(",")}，工作区 ${probe.workArea.join(",")}`,
+  );
+}
+
 let reported = false;
 function reportRenderer(gl: WebGL2RenderingContext): void {
   if (reported) return;
@@ -609,6 +645,7 @@ export function startBackground(watchOcclusion: boolean): Scene | null {
         return;
       }
       void invoke<Occlusion>("desktop_occluded").then((probe) => {
+        reportOcclusion(probe);
         hidden = probe.occluded;
         if (!probe.occluded) resume();
       });
