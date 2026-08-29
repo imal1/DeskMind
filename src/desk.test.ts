@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { deskStats, moveInGrid, sinceTidy } from "./desk";
+import { deskStats, moveInGrid, scatterAt, sinceTidy, tiltAt } from "./desk";
 
 // ---------- grid navigation ----------
 
@@ -68,4 +68,37 @@ test("older tidies read in the largest unit that fits", () => {
 
 test("a clock that went backwards still reads as just now", () => {
   expect(sinceTidy(10 * MIN, 9 * MIN)).toBe("刚刚整理过");
+});
+
+// ---------- motion ----------
+
+test("the scatter pattern is the one the design fixed", () => {
+  // ((i%5-2) × 26px, (i%3-1) × 20px), staggered (i%12) × 26ms.
+  expect(scatterAt(0)).toEqual({ x: -52, y: -20, delay: 0 });
+  expect(scatterAt(1)).toEqual({ x: -26, y: 0, delay: 26 });
+  expect(scatterAt(4)).toEqual({ x: 52, y: 0, delay: 104 });
+});
+
+test("the pattern repeats rather than running away", () => {
+  // Every factor is a remainder, so tile 60 sits exactly where tile 0 does and a
+  // grid of any size scatters by the same fixed amount.
+  expect(scatterAt(60)).toEqual(scatterAt(0));
+});
+
+test("the design's formula leaves one tile in fifteen standing still", () => {
+  // i%5 === 2 zeroes x and i%3 === 1 zeroes y, which coincide every 15 tiles.
+  // Recorded rather than corrected: the offsets are the design's, and a couple
+  // of tiles holding their ground is what it asked for.
+  expect(scatterAt(7)).toEqual({ x: 0, y: 0, delay: 182 });
+  expect(scatterAt(22)).toEqual({ x: 0, y: 0, delay: 260 });
+});
+
+test("the tilt runs from -0.5 at one edge to 0.5 at the other", () => {
+  expect(tiltAt(100, 100, 200)).toBe(-0.5);
+  expect(tiltAt(200, 100, 200)).toBe(0);
+  expect(tiltAt(300, 100, 200)).toBe(0.5);
+});
+
+test("a tile with no width does not tilt at all", () => {
+  expect(tiltAt(100, 100, 0)).toBe(0);
 });

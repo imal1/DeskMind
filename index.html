@@ -28,8 +28,14 @@
   }
 
   @keyframes dmdrift { 0%, 100% { transform: translate3d(0,0,0) scale(1); } 50% { transform: translate3d(3%,-2%,0) scale(1.08); } }
-  @keyframes dmsoft { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
-  @keyframes dmtoast { from { opacity: 0; transform: translate(-50%, 12px); } to { opacity: 1; transform: translate(-50%, 0); } }
+  /* Keeps the centring translate the panels are positioned by. The old version
+     animated `translateY` alone, which replaced `translateX(-50%)` outright and
+     left the panel sitting half a width right of centre for as long as the
+     animation's fill kept the override alive. */
+  @keyframes dmslide { from { opacity: 0; transform: translateX(-50%) translateY(10px); } to { opacity: 1; transform: translateX(-50%) translateY(0); } }
+  @keyframes dmToast { from { opacity: 0; transform: translateX(-50%) translateY(16px) scale(.97); } to { opacity: 1; transform: translateX(-50%) translateY(0) scale(1); } }
+  @keyframes dmRise { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: none; } }
+  @keyframes dmBurst { from { opacity: .6; transform: translate(-50%, -50%) scale(.5); } to { opacity: 0; transform: translate(-50%, -50%) scale(2.2); } }
   @keyframes dmpop { from { opacity: 0; transform: translate(-50%, -50%) scale(.98); } to { opacity: 1; transform: translate(-50%, -50%) scale(1); } }
   @keyframes dmmenu { from { opacity: 0; transform: scale(.96) translateY(-4px); } to { opacity: 1; transform: scale(1) translateY(0); } }
   @keyframes dmbreath { 0%, 100% { opacity: .5; transform: scale(1); } 50% { opacity: .9; transform: scale(1.06); } }
@@ -138,6 +144,7 @@
   }
   #hero {
     flex: 1 1 460px; min-width: 0;
+    animation: dmRise .46s var(--ease) both;
     display: flex; flex-direction: column;
     gap: clamp(14px, 1.6vh, 20px);
     max-width: 760px;
@@ -296,16 +303,76 @@
 
   .tile {
     position: relative;
-    /* 5:3, from the design. A cell sized by its contents instead would give
-       every row a different height as soon as one label wrapped to two lines. */
+    /* 5:3, from the design. The face below is taken out of flow so that this
+       ratio is what the cell actually measures: laid out in flow, a label that
+       wrapped to two lines would push its whole row taller and the grid would
+       go back to having one height per row. */
     aspect-ratio: 5 / 3;
-    padding: 14px 12px 12px; border-radius: 20px;
-    justify-content: center;
+    border-radius: 20px; overflow: hidden;
+    /* Above the glow, which is a single element sharing the grid with them. */
+    z-index: 1;
     background: rgba(255, 255, 255, 0.06);
     border: 1px solid rgba(255, 255, 255, 0.08);
-    display: flex; flex-direction: column; align-items: center; gap: 12px;
     transition: transform .3s var(--ease), background .3s var(--ease);
   }
+  /* Fills the cell rather than sizing it. A name too long for the space is
+     cropped, which is the design's answer as well — the alternative is a grid
+     whose rows all differ. */
+  .tileface {
+    position: absolute; inset: 0;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: clamp(9px, 1vw, 12px); padding: 12px 12px 10px;
+    transition: transform .34s var(--ease);
+  }
+  /* The selected tile's face leans away from the pointer. --px/--py are the
+     pointer's position across the tile as -0.5…0.5, set from the pointer and
+     from nothing else: an arrow key has no pointer to read, so it selects a
+     tile that is sitting flat. */
+  .tile.on .tileface {
+    transform: perspective(900px)
+               rotateX(calc(var(--py, 0) * -6deg))
+               rotateY(calc(var(--px, 0) * 7deg))
+               scale(1.1);
+  }
+  /* The icon runs against the face it sits on. One layer moving is a picture
+     sliding about; two moving apart is the only thing here that reads as
+     thickness. */
+  .tile.on .tileico {
+    transform: translate(calc(var(--px, 0) * -5px), calc(var(--py, 0) * -4px));
+  }
+  /* One glow for the whole grid rather than one per tile: it has to fade out
+     after the selection has gone somewhere else, and a tile's own child is
+     thrown away with the tile on the very repaint that moved the selection.
+     Kept out of the repaint entirely, it also spares a few hundred blurred
+     layers that would sit at zero opacity waiting their turn. */
+  #tileglow {
+    position: absolute; left: 0; top: 0; z-index: 0; pointer-events: none;
+    border-radius: 26px;
+    background: radial-gradient(circle, var(--accent), transparent 70%);
+    filter: blur(22px);
+    opacity: 0;
+    /* Only the appearing and the going are animated. Sliding it between tiles
+       would be a second selection animation nobody asked for, and it is what
+       made the very first paint sweep a light across the grid. */
+    transition: opacity .36s var(--ease);
+  }
+  #tileglow.on { opacity: .5; }
+  /* A tidy throws the field apart and drops it back, at the durations issue #9's
+     acceptance checklist fixed. The offset and the wait are handed to each tile
+     from `scatterAt`; these classes only say which way the field is going. */
+  #grid.scatter .tile {
+    transform: translate(var(--sx, 0px), var(--sy, 0px));
+    transition: transform .62s var(--ease) var(--sd, 0ms);
+  }
+  /* Carries the lift through, or the selected tile would drop 4px the moment a
+     tidy starts and pick it back up when the field lands. */
+  #grid.scatter .tile.on { transform: translate(var(--sx, 0px), var(--sy, 0px)) translateY(-4px); }
+  #grid.settle .tile { transition: transform .5s var(--ease) var(--sd, 0ms); }
+  /* The one frame that puts freshly painted tiles back where the scattered ones
+     were standing. Without it they would drift in from their resting places
+     instead of falling home from where the user last saw them. Last, so it wins
+     over the rule above at equal specificity. */
+  #grid.instant .tile { transition: none; }
   .tile:hover { background: rgba(255, 255, 255, 0.1); }
   /* The selected tile lifts rather than widening: in a grid a widening cell would
      reflow every tile after it, which is the one thing a grid is meant to stop. */
@@ -317,12 +384,13 @@
   }
   .tile.dragging { opacity: .4; }
   .tileico {
-    width: clamp(40px, 3.2vw, 52px); aspect-ratio: 1; border-radius: 13px;
+    width: clamp(36px, 3.2vw, 52px); aspect-ratio: 1; border-radius: 13px;
     background-color: rgba(255, 255, 255, 0.07);
     background-size: contain; background-repeat: no-repeat; background-position: center;
     display: flex; align-items: center; justify-content: center;
     font-size: 18px; color: var(--ink-50);
     box-shadow: inset 0 1px 0 rgba(255, 255, 255, .2);
+    transition: transform .2s linear;
   }
   .tilename {
     font-size: 12.5px; text-align: center; line-height: 1.45; color: var(--ink-86);
@@ -380,9 +448,18 @@
      us to wait for it to finish before the glass could appear — which is exactly
      the delay this removes. */
   @keyframes dmfade { from { opacity: 0; } to { opacity: 1; } }
-  #search, #settings, #first { animation: dmfade .2s var(--ease) both; }
+  #search, #settings, #first, #ctx { animation: dmfade .2s var(--ease) both; }
+  /* 纯净 draws no glass, so there is no rectangle to outrun and the panels may
+     move as they arrive. Keyed off the treatment rather than off `.glassed`,
+     which the shader sets: two of the open paths read the panel's box before
+     that class lands, so a rule waiting on it would start the moving animation
+     and swap mid-flight. Erring towards the fade costs a slide nobody misses. */
+  [data-effect="none"] #search,
+  [data-effect="none"] #settings { animation: dmslide .3s var(--ease) both; }
+  [data-effect="none"] #first { animation: dmpop .35s var(--ease) both; }
+  [data-effect="none"] #ctx { animation: dmmenu .18s var(--ease) both; }
 
-  #search { top: 14vh; transform: translateX(-50%); width: min(640px, 84vw); overflow: hidden; animation: dmsoft .3s var(--ease) both; }
+  #search { top: 14vh; transform: translateX(-50%); width: min(640px, 84vw); overflow: hidden; }
   #searchbar { display: flex; align-items: center; gap: 14px; padding: 19px 24px; }
   #dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); flex: none; }
   #q { flex: 1; border: none; outline: none; background: none; color: #fff; font-size: 17px; font-weight: 300; }
@@ -406,7 +483,6 @@
     top: 10vh; transform: translateX(-50%); width: min(580px, 88vw);
     padding: 28px; display: flex; flex-direction: column; gap: 22px;
     max-height: 76vh; overflow-y: auto; scrollbar-width: none;
-    animation: dmsoft .3s var(--ease) both;
   }
   #settings::-webkit-scrollbar { display: none; }
   #sethead { display: flex; align-items: baseline; justify-content: space-between; }
@@ -495,7 +571,6 @@
   #first {
     top: 50%; transform: translate(-50%, -50%); width: min(600px, 88vw);
     padding: 34px; display: flex; flex-direction: column; gap: 20px;
-    animation: dmpop .35s var(--ease) both;
   }
   #fdots { display: flex; align-items: center; gap: 8px; }
   .fdot { width: 6px; height: 6px; border-radius: 50%; background: rgba(255, 255, 255, 0.18); transition: background .35s var(--ease); }
@@ -528,7 +603,6 @@
     border: 1px solid var(--glass-line);
     box-shadow: 0 10px 28px -16px rgba(0, 0, 0, .85);
     display: flex; flex-direction: column; gap: 1px;
-    animation: dmmenu .18s var(--ease) both;
   }
   #ctxhead { font-size: 11px; color: var(--ink-36); padding: 8px 12px 9px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .ctxitem {
@@ -546,7 +620,7 @@
     background: rgba(22, 24, 32, 0.8); backdrop-filter: var(--glass);
     border: 1px solid var(--glass-line);
     box-shadow: 0 10px 28px -16px rgba(0, 0, 0, .85);
-    animation: dmtoast .3s var(--ease);
+    animation: dmToast .34s var(--ease);
   }
   #toastdot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); flex: none; }
   #toasttitle { font-size: 13.5px; color: var(--ink-96); }
@@ -558,6 +632,32 @@
     transition: all .3s var(--ease);
   }
   #toastact:hover { filter: brightness(1.08); }
+
+  /* Marks the tile a launch came from, then goes. Nothing keeps it: whatever
+     just started is about to cover the desktop it was drawn on. */
+  .burst {
+    position: absolute; z-index: 19; pointer-events: none;
+    width: clamp(90px, 8vw, 140px); aspect-ratio: 1; border-radius: 50%;
+    background: radial-gradient(circle, var(--accent), transparent 68%);
+    animation: dmBurst 1s var(--ease) forwards;
+  }
+
+  /* Displacement and scale degrade to a fade or to arriving already there.
+     Enumerated rather than switched off across `*`: the first-run progress bar
+     is the only thing on screen saying the app is working, and a blanket rule
+     would freeze it at 40% — a determinate bar stuck part-way, which is worse
+     than no bar at all. The tidy's scatter and the launch ring are missing here
+     because `scatterTiles` and `burstAt` never start them under this setting. */
+  @media (prefers-reduced-motion: reduce) {
+    #search, #settings, #first, #ctx, #toast, #hero { animation-name: dmfade !important; }
+    .bloom { animation: none; }
+    /* The lean and the counter-layer go; the selected face keeps the size it was
+       travelling towards, because arriving directly at the resting state is what
+       is asked for, not losing it. */
+    .tile.on .tileface { transform: scale(1.1); }
+    .tile.on .tileico { transform: none; }
+    .tile, .tileface, .tileico, #tileglow { transition: none; }
+  }
 
   .hide { display: none !important; }
 </style>
@@ -611,7 +711,10 @@
       </div>
     </div>
 
-    <div id="grid"></div>
+    <div id="grid">
+      <!-- Outlives every repaint, so its fade has something to fade out from. -->
+      <div id="tileglow"></div>
+    </div>
 
     <div id="hints">
       <span><span class="k">← →</span>选择</span>

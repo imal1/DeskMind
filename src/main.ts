@@ -1,7 +1,7 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { rank } from "./match";
-import { deskStats, moveInGrid, sinceTidy, type ArrowKey } from "./desk";
+import { deskStats, moveInGrid, scatterAt, sinceTidy, tiltAt, type ArrowKey } from "./desk";
 import { startBackground, type EffectName, type Scene } from "./background";
 
 type LaunchTarget = {
@@ -21,6 +21,8 @@ const el = <T extends HTMLElement>(id: string): T =>
 
 const tabsEl = el("tabs");
 const gridEl = el("grid");
+const glowEl = el("tileglow");
+const stageEl = el("stage");
 const statusWhenEl = el("statuswhen");
 const statusRowsEl = el("statusrows");
 const tidyUnzonedEl = el<HTMLButtonElement>("tidyunzoned");
@@ -41,6 +43,14 @@ const toastEl = el("toast");
 const toastTitleEl = el("toasttitle");
 const toastSubEl = el("toastsub");
 const toastActEl = el<HTMLButtonElement>("toastact");
+
+/**
+ * Movement is decoration here — nothing on screen means anything by moving — so
+ * everything that displaces or scales is skipped outright when the user has
+ * asked for less of it, and the state it was travelling towards is simply the
+ * state they get. The stylesheet does the same for the parts CSS owns.
+ */
+const reduced = matchMedia("(prefers-reduced-motion: reduce)");
 
 let all: LaunchTarget[] = [];
 let iconOf = new Map<string, string>();
@@ -131,10 +141,14 @@ function selected(): LaunchTarget | undefined {
 
 // ---------- detail panel ----------
 
+/** The target the hero is currently showing, so it only re-rises for a new one. */
+let heroPath = "";
+
 function paintHero(): void {
   const t = selected();
   if (!t) {
     heroEl.classList.add("hide");
+    heroPath = "";
     return;
   }
   heroEl.classList.remove("hide");
@@ -149,6 +163,16 @@ function paintHero(): void {
     .join(" · ");
   heroTitleEl.textContent = t.name;
   heroPathEl.textContent = t.path;
+
+  // Replayed only when the selection moved. `paintHero` runs on every repaint of
+  // the grid, and a hero that rose again each time a tile was pinned or a zone
+  // was written would read as a flicker rather than as a change of subject.
+  if (t.path !== heroPath) {
+    heroPath = t.path;
+    heroEl.style.animation = "none";
+    void heroEl.offsetWidth;
+    heroEl.style.animation = "";
+  }
 }
 
 // ---------- context menu ----------
@@ -306,6 +330,138 @@ function paintTabs(): void {
   );
 }
 
+/**
+ * Every tile the grid is currently showing. The grid holds one thing that is not
+ * a tile — the selection glow — so the tiles are asked for by name rather than
+ * taken as "the children".
+ */
+function tileNodes(): HTMLElement[] {
+  return [...gridEl.querySelectorAll<HTMLElement>(".tile")];
+}
+
+/**
+ * Clears what a paint owns. The glow is deliberately left standing: it is the
+ * one element whose fade has to survive the repaint that moved the selection.
+ */
+function clearGrid(): void {
+  for (const node of gridEl.querySelectorAll(".tile, #gridempty")) node.remove();
+  // The leaning tile is one of those, and holding a detached node would keep it
+  // alive and send the next flattening to a tile nobody can see.
+  tilted = null;
+}
+
+/** The tile the pointer is leaning, so it can be laid flat once the pointer goes. */
+let tilted: HTMLElement | null = null;
+
+/** How far past the tile the glow spreads on every side, from the checklist. */
+const GLOW_INSET = 0.16;
+
+/**
+ * Puts the glow under the selected tile. Measured here rather than expressed as
+ * a CSS inset because the glow is not the tile's child — being nobody's child is
+ * what lets it outlive the repaint, and so what lets it fade rather than vanish.
+ *
+ * Placed rather than travelled: only its appearing and going are animated, so
+ * moving it costs nothing and needs no transition to be suppressed first.
+ */
+function paintGlow(): void {
+  const node = tileNodes()[tile];
+  if (!node) {
+    glowEl.classList.remove("on");
+    return;
+  }
+  const w = node.offsetWidth;
+  const h = node.offsetHeight;
+  glowEl.style.width = `${w * (1 + GLOW_INSET * 2)}px`;
+  glowEl.style.height = `${h * (1 + GLOW_INSET * 2)}px`;
+  glowEl.style.transform =
+    `translate(${node.offsetLeft - w * GLOW_INSET}px, ${node.offsetTop - h * GLOW_INSET}px)`;
+  glowEl.classList.add("on");
+}
+
+function setTilt(node: HTMLElement | null, x = 0, y = 0): void {
+  if (tilted && tilted !== node) {
+    tilted.style.removeProperty("--px");
+    tilted.style.removeProperty("--py");
+  }
+  tilted = node;
+  if (!node) return;
+  node.style.setProperty("--px", String(x));
+  node.style.setProperty("--py", String(y));
+}
+
+/**
+ * Leans the selected tile towards a pointer at these coordinates, or lays it
+ * flat when the pointer is somewhere else. Works off the point rather than off
+ * the event's target so that it can also be called straight after a repaint,
+ * when the node the pointer was over has already been thrown away.
+ */
+function leanAt(x: number, y: number): void {
+  const node = tileNodes()[tile];
+  if (!node) return setTilt(null);
+  const box = node.getBoundingClientRect();
+  const outside = x < box.left || x > box.right || y < box.top || y > box.bottom;
+  if (outside) return setTilt(null);
+  setTilt(node, tiltAt(x, box.left, box.width), tiltAt(y, box.top, box.height));
+}
+
+/** Hands every tile the offset and the wait issue #9's checklist gave its position. */
+function markScatter(): void {
+  tileNodes().forEach((node, i) => {
+    const s = scatterAt(i);
+    node.style.setProperty("--sx", `${s.x}px`);
+    node.style.setProperty("--sy", `${s.y}px`);
+    node.style.setProperty("--sd", `${s.delay}ms`);
+  });
+}
+
+let settleTimer = 0;
+
+/** A full scatter: its own .62s, plus the wait the last staggered tile sits out. */
+const SCATTER_MS = 620 + scatterAt(11).delay;
+
+/**
+ * Resolves once the scatter has had time to play. Awaited alongside the work
+ * rather than before it, so it costs nothing whenever the work is the slower of
+ * the two — which is every real tidy. Undo is the case it exists for: that one
+ * writes a file and comes straight back, and without the wait the tiles would
+ * snap to an offset they never had time to travel to.
+ */
+function scatterHold(): Promise<void> {
+  if (reduced.matches) return Promise.resolve();
+  return new Promise((done) => window.setTimeout(done, SCATTER_MS));
+}
+
+/** Throws the field apart for as long as a tidy is out. */
+function scatterTiles(): void {
+  if (reduced.matches) return;
+  markScatter();
+  gridEl.classList.remove("settle");
+  gridEl.classList.add("scatter");
+}
+
+/**
+ * Drops the field home. Runs after the repaint that brought the new zones in, so
+ * the tiles it finds are fresh ones standing at rest: they are put back where
+ * the scattered ones were for exactly one frame, then let go.
+ *
+ * Every way a tidy can end comes through here — filed, failed, undone — because
+ * a field left scattered is the app still looking like it is thinking.
+ */
+function settleTiles(): void {
+  gridEl.classList.remove("scatter", "settle");
+  if (reduced.matches) return;
+  markScatter();
+  gridEl.classList.add("instant", "scatter");
+  void gridEl.offsetWidth;
+  gridEl.classList.remove("instant", "scatter");
+  gridEl.classList.add("settle");
+  window.clearTimeout(settleTimer);
+  // Dropped once the last of the staggered tiles has landed. Held any longer and
+  // the next selection would inherit the stagger and lift late.
+  settleTimer = window.setTimeout(() => gridEl.classList.remove("settle"), 500 + scatterAt(11).delay + 60);
+}
+
 function paintGrid(): void {
   const items = inZone();
   summaryEl.textContent = `共 ${all.length} 项 · 图标 ${iconOf.size}`;
@@ -315,22 +471,30 @@ function paintGrid(): void {
     empty.id = "gridempty";
     empty.textContent =
       stored.length === 0 ? "还没有分区，点右上角「整理」让 AI 提一套" : "这个分区还是空的";
-    gridEl.replaceChildren(empty);
+    clearGrid();
+    gridEl.append(empty);
     cols = 1;
+    paintGlow();
     paintHero();
     return;
   }
 
   tile = Math.min(tile, items.length - 1);
 
-  gridEl.replaceChildren(
+  clearGrid();
+  gridEl.append(
     ...items.map((t, i) => {
       const node = document.createElement("div");
       node.className = i === tile ? "tile on" : "tile";
       node.title = t.path;
-      node.addEventListener("click", () => {
+      // What a launch matches its tile by, rather than reading the tooltip.
+      node.dataset.path = t.path;
+      node.addEventListener("click", (e) => {
         tile = i;
         paintGrid();
+        // The pointer has not moved, but the tile under it has been replaced.
+        // Without this the newly selected tile sits flat until the pointer stirs.
+        leanAt(e.clientX, e.clientY);
       });
       node.addEventListener("dblclick", () => void run(t));
       node.addEventListener("contextmenu", (e) => {
@@ -359,7 +523,12 @@ function paintGrid(): void {
       name.className = "tilename";
       name.textContent = t.name;
 
-      node.append(ico, name);
+      // The face is absolute inside the cell, so the 5:3 ratio is the cell's own
+      // and a long name crops instead of growing its row.
+      const face = document.createElement("div");
+      face.className = "tileface";
+      face.append(ico, name);
+      node.append(face);
       if (pinned.has(t.path)) {
         const dot = document.createElement("div");
         dot.className = "tilepin";
@@ -370,7 +539,9 @@ function paintGrid(): void {
   );
 
   cols = measureCols();
-  gridEl.children[tile]?.scrollIntoView({ block: "nearest" });
+  tileNodes()[tile]?.scrollIntoView({ block: "nearest" });
+  // After the scroll, so the glow is placed where the tile came to rest.
+  paintGlow();
   paintHero();
 }
 
@@ -380,7 +551,7 @@ function paintGrid(): void {
  * the window worked out, and the keyboard has to agree with what is on screen.
  */
 function measureCols(): number {
-  const kids = [...gridEl.children] as HTMLElement[];
+  const kids = tileNodes();
   const first = kids[0];
   if (!first) return 1;
   const top = first.offsetTop;
@@ -806,7 +977,32 @@ async function copyPath(target: LaunchTarget): Promise<void> {
   }
 }
 
+/**
+ * One ring where the launch came from. Drawn on the stage rather than in the
+ * grid so it is not clipped by the scroll, and thrown away the moment it has
+ * played — whatever was just started is about to cover the desktop anyway.
+ *
+ * A search result has no tile on screen, so it gets no ring.
+ */
+function burstAt(target: LaunchTarget): void {
+  if (reduced.matches) return;
+  const node = tileNodes().find((n) => n.dataset.path === target.path);
+  if (!node) return;
+  const box = node.getBoundingClientRect();
+  const ring = document.createElement("div");
+  ring.className = "burst";
+  ring.style.left = `${box.left + box.width / 2}px`;
+  ring.style.top = `${box.top + box.height / 2}px`;
+  ring.addEventListener("animationend", () => ring.remove());
+  // Whatever was just launched takes the foreground, and that is the moment we
+  // are covered. ADR 0016's power line is that a covered desktop draws nothing,
+  // so the ring goes then too rather than finishing its second behind a window.
+  addEventListener("blur", () => ring.remove(), { once: true });
+  stageEl.append(ring);
+}
+
 async function run(target: LaunchTarget): Promise<void> {
+  burstAt(target);
   // Nothing to get out of the way: we are the desktop, so the launched app opens
   // on top of us the way it would over any desktop.
   try {
@@ -915,16 +1111,21 @@ async function undoTidy(): Promise<void> {
   if (!previous) return;
   const restore = previous;
   previous = null;
+  scatterTiles();
   try {
-    await invoke("write_zones", { value: restore });
+    await Promise.all([invoke("write_zones", { value: restore }), scatterHold()]);
     stored = restore.zones;
     pinned = new Set(restore.pinned);
     tile = 0;
     paint();
-    toast("已恢复整理前的分区");
   } catch (err) {
     toast("撤销失败", String(err));
+    return;
+  } finally {
+    // Undo travels the same path out and back as the tidy it is reversing.
+    settleTiles();
   }
+  toast("已恢复整理前的分区");
 }
 
 async function doTidy(unzonedOnly = false): Promise<void> {
@@ -946,9 +1147,13 @@ async function doTidy(unzonedOnly = false): Promise<void> {
   tidyBtn.disabled = true;
   tidyBtn.textContent = "整理中…";
   toast(first ? "正在读桌面，判断该分成哪些区" : "正在整理");
+  scatterTiles();
 
   try {
-    const result = await invoke<Zones>("run_tidy", { unzonedOnly });
+    const [result] = await Promise.all([
+      invoke<Zones>("run_tidy", { unzonedOnly }),
+      scatterHold(),
+    ]);
     stored = result.zones;
     pinned = new Set(result.pinned ?? []);
     // The backend has just written the same stamp to disk; taking it locally
@@ -969,6 +1174,9 @@ async function doTidy(unzonedOnly = false): Promise<void> {
     previous = null;
     toast("整理失败", String(err));
   } finally {
+    // Every ending lands the field, the failed one included: tiles left mid-air
+    // would say the tidy is still running long after it gave up.
+    settleTiles();
     tidyBtn.disabled = false;
     tidyBtn.textContent = "整理";
   }
@@ -1057,10 +1265,18 @@ window.addEventListener("keydown", (e) => {
 });
 
 // The grid is `auto-fill`, so a resized window silently changes the column count
-// under the keyboard. Re-measuring is cheaper than repainting every tile.
+// under the keyboard. Re-measuring is cheaper than repainting every tile, and
+// the glow has to follow the tile to wherever the new columns put it.
 window.addEventListener("resize", () => {
   cols = measureCols();
+  paintGlow();
 });
+
+// Only the selected tile leans, and only under a pointer. An arrow key has no
+// position to lean by, so a keyboard selection lands flat — and a tile that kept
+// its tilt after the pointer had gone would read as picked up, not as selected.
+gridEl.addEventListener("pointermove", (e) => leanAt(e.clientX, e.clientY));
+gridEl.addEventListener("pointerleave", () => setTilt(null));
 
 queryEl.addEventListener("input", () => {
   pick = 0;

@@ -61,3 +61,31 @@ export function sinceTidy(last: number, now: number): string | null {
   if (hours < 24) return `上次整理 ${hours} 小时前`;
   return `上次整理 ${Math.floor(hours / 24)} 天前`;
 }
+
+export type Scatter = { x: number; y: number; delay: number };
+
+/**
+ * Where tile `i` flies to while a tidy is running, and how long it waits first.
+ *
+ * The offsets are the design's, and they are remainders rather than anything
+ * random: the same grid scatters the same way every time, the pattern repeats
+ * every 15 tiles across and every 12 in time, and a grid of any size is thrown
+ * the same fixed distance instead of further the more targets the user owns.
+ *
+ * One tile in fifteen — `i % 5 === 2` and `i % 3 === 1` together — gets no
+ * offset at all and holds its ground. That falls out of the design's own
+ * numbers, so it is kept.
+ */
+export function scatterAt(i: number): Scatter {
+  return { x: ((i % 5) - 2) * 26, y: ((i % 3) - 1) * 20, delay: (i % 12) * 26 };
+}
+
+/**
+ * Where a pointer sits along one edge of a tile, as −0.5 at the near edge
+ * through 0 at the centre to 0.5 at the far one — the number the parallax tilts
+ * by. A tile with no width has no centre to lean away from, so it stays flat.
+ */
+export function tiltAt(point: number, start: number, size: number): number {
+  if (size <= 0) return 0;
+  return (point - start) / size - 0.5;
+}
