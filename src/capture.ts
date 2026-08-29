@@ -16,14 +16,40 @@ const METHODS = ["drawElementImage", "drawElement"] as const;
 
 type DrawElement = (el: Element, x: number, y: number) => void;
 
-function methodOn(ctx: CanvasRenderingContext2D): DrawElement | null {
+function methodOn(ctx: CanvasRenderingContext2D): { name: string; draw: DrawElement } | null {
   const bag = ctx as unknown as Record<string, unknown>;
   for (const name of METHODS) {
     if (typeof bag[name] === "function") {
-      return (bag[name] as DrawElement).bind(ctx);
+      return { name, draw: (bag[name] as DrawElement).bind(ctx) };
     }
   }
   return null;
+}
+
+/**
+ * Says out loud which name was found, or that none was, and leaves the answer on
+ * `window.__dmCapture` — the same treatment `window.__dmRenderer` gets in
+ * `background.ts`, and for the same reason.
+ *
+ * Losing this API is the one failure here that looks like a decision rather than
+ * a fault: the glass keeps working, quietly refracting only the wallpaper and
+ * dropping to the lighter darkness ramp. That is a different look, and judging it
+ * against criteria written for the real one wastes the whole acceptance run. So
+ * the degraded path announces itself instead of waiting to be noticed.
+ */
+let told = false;
+function reportCapture(name: string | null): void {
+  if (told) return;
+  told = true;
+  (window as unknown as { __dmCapture: string }).__dmCapture = name ?? "none";
+  if (name) {
+    console.info(`界面捕获：ctx.${name}`);
+  } else {
+    console.error(
+      "界面捕获不可用：玻璃只会折射壁纸，压暗换成轻档（0.06→0.26）。" +
+        "检查 WebView2 是否带上了 --enable-blink-features=CanvasDrawElement。",
+    );
+  }
 }
 
 export type Capture = {
@@ -47,8 +73,10 @@ export function createCapture(source: Element, scale = 0.5): Capture | null {
   const ctx = canvas.getContext("2d", { alpha: false });
   if (!ctx) return null;
 
-  const draw = methodOn(ctx);
-  if (!draw) return null;
+  const found = methodOn(ctx);
+  reportCapture(found?.name ?? null);
+  if (!found) return null;
+  const draw = found.draw;
 
   let broken = false;
 
@@ -81,7 +109,3 @@ export function createCapture(source: Element, scale = 0.5): Capture | null {
   };
 }
 
-export function drawElementAvailable(): boolean {
-  const ctx = document.createElement("canvas").getContext("2d");
-  return ctx !== null && methodOn(ctx) !== null;
-}

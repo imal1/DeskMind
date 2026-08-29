@@ -449,8 +449,15 @@
   /* When the shader owns a panel it owns the whole surface: frosting, tint,
      hairline border and shadow. The DOM keeps only the contents.
      Two systems each painting half a panel is what produced the doubled frames,
-     mismatched corners and muddy shadows — there is now exactly one. */
-  .panel.glassed {
+     mismatched corners and muddy shadows — there is now exactly one.
+
+     #ctx is spelled out beside the class rather than being given `.panel`: it
+     carries its own id rules for background, border and shadow, and an id beats
+     a class every time, so `.panel.glassed` slid straight off it. That is the
+     whole of the bug — the shader was registering the menu's rectangle and
+     drawing glass behind an opaque menu that hid it. */
+  .panel.glassed,
+  #ctx.glassed {
     background: none;
     backdrop-filter: none;
     border-color: transparent;
