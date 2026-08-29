@@ -353,6 +353,18 @@ function clearGrid(): void {
 /** The tile the pointer is leaning, so it can be laid flat once the pointer goes. */
 let tilted: HTMLElement | null = null;
 
+/**
+ * Publishes the width the grid actually gave a tile, which the lean's viewing
+ * distance is a multiple of. Measured rather than derived from the CSS for the
+ * same reason the column count is: `auto-fill` with a `1fr` track means the
+ * window decides, and a lean pinned to a pixel distance would flatten out as
+ * that window widened.
+ */
+function publishTileWidth(): void {
+  const first = tileNodes()[0];
+  if (first) gridEl.style.setProperty("--tile-w", `${first.offsetWidth}px`);
+}
+
 /** How far past the tile the glow spreads on every side, from the checklist. */
 const GLOW_INSET = 0.16;
 
@@ -539,6 +551,7 @@ function paintGrid(): void {
   );
 
   cols = measureCols();
+  publishTileWidth();
   tileNodes()[tile]?.scrollIntoView({ block: "nearest" });
   // After the scroll, so the glow is placed where the tile came to rest.
   paintGlow();
@@ -1271,6 +1284,7 @@ window.addEventListener("keydown", (e) => {
 // the glow has to follow the tile to wherever the new columns put it.
 window.addEventListener("resize", () => {
   cols = measureCols();
+  publishTileWidth();
   paintGlow();
 });
 

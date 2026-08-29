@@ -377,13 +377,20 @@
   .tile.on {
     background: rgba(255, 255, 255, 0.15);
     border-color: rgba(255, 255, 255, 0.24);
-    /* Twice the angles issue #9's checklist named, at a viewing distance a third
-       shorter. Those numbers were written against the mock, whose tiles are much
-       bigger than the 140x85 auto-fill gives here: at 900px and ±3° the two edges
-       of a tile this size differ by about half a percent, which is a lean nobody
-       can see. Doubled and brought closer it reads, and stops there — the next
-       step up was a card that swings rather than leans. */
-    transform: perspective(500px)
+    /* Twice the angles issue #9's checklist named, at a viewing distance held to
+       2.86 tile widths rather than to a fixed 900px.
+
+       A perspective is a distance to the surface, so what decides how much of a
+       lean you see is the ratio between it and the tile — the same distance over
+       a wider tile is a flatter tile. The checklist's numbers came off a mock
+       whose board is a fixed 1600x900; this grid is auto-fill, so a tile is 148px
+       at the narrow end and stretches past 200px on an ultrawide. Pinned in
+       pixels, the tilt would fade as the window widened. --tile-w is whatever
+       the grid actually laid out, published by paintGrid.
+
+       The angles are left in degrees on purpose: an angle already means the same
+       thing at any size. Only the distance had to be tied to the tile. */
+    transform: perspective(calc(var(--tile-w, 175px) * 2.86))
                rotateX(calc(var(--py, 0) * -12deg))
                rotateY(calc(var(--px, 0) * 14deg))
                translateY(-4px);
