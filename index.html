@@ -313,7 +313,7 @@
     z-index: 1;
     background: rgba(255, 255, 255, 0.06);
     border: 1px solid rgba(255, 255, 255, 0.08);
-    transition: transform .3s var(--ease), background .3s var(--ease);
+    transition: transform .34s var(--ease), background .3s var(--ease);
   }
   /* Fills the cell rather than sizing it. A name too long for the space is
      cropped, which is the design's answer as well — the alternative is a grid
@@ -324,16 +324,11 @@
     gap: clamp(9px, 1vw, 12px); padding: 12px 12px 10px;
     transition: transform .34s var(--ease);
   }
-  /* The selected tile's face leans away from the pointer. --px/--py are the
-     pointer's position across the tile as -0.5…0.5, set from the pointer and
-     from nothing else: an arrow key has no pointer to read, so it selects a
-     tile that is sitting flat. */
-  .tile.on .tileface {
-    transform: perspective(900px)
-               rotateX(calc(var(--py, 0) * -6deg))
-               rotateY(calc(var(--px, 0) * 7deg))
-               scale(1.1);
-  }
+  /* The lean goes on the card, not on the face: the face paints nothing at all —
+     background, border and radius all live on .tile — so leaning it tilted a
+     transparent box and put no moving surface on screen. The face keeps the
+     scale, which is the half of it that shows on the content. */
+  .tile.on .tileface { transform: scale(1.1); }
   /* The icon runs against the face it sits on. One layer moving is a picture
      sliding about; two moving apart is the only thing here that reads as
      thickness. */
@@ -376,10 +371,16 @@
   .tile:hover { background: rgba(255, 255, 255, 0.1); }
   /* The selected tile lifts rather than widening: in a grid a widening cell would
      reflow every tile after it, which is the one thing a grid is meant to stop. */
+  /* --px/--py are the pointer's position across the tile as -0.5…0.5, and they
+     are set from a pointer and from nothing else: an arrow key has no position
+     to lean by, so a keyboard selection lands flat. */
   .tile.on {
     background: rgba(255, 255, 255, 0.15);
     border-color: rgba(255, 255, 255, 0.24);
-    transform: translateY(-4px);
+    transform: perspective(900px)
+               rotateX(calc(var(--py, 0) * -6deg))
+               rotateY(calc(var(--px, 0) * 7deg))
+               translateY(-4px);
     box-shadow: 0 22px 50px -24px rgba(0, 0, 0, .9);
   }
   .tile.dragging { opacity: .4; }
@@ -654,7 +655,7 @@
     /* The lean and the counter-layer go; the selected face keeps the size it was
        travelling towards, because arriving directly at the resting state is what
        is asked for, not losing it. */
-    .tile.on .tileface { transform: scale(1.1); }
+    .tile.on { transform: translateY(-4px); }
     .tile.on .tileico { transform: none; }
     .tile, .tileface, .tileico, #tileglow { transition: none; }
   }
