@@ -994,10 +994,12 @@ function burstAt(target: LaunchTarget): void {
   ring.style.left = `${box.left + box.width / 2}px`;
   ring.style.top = `${box.top + box.height / 2}px`;
   ring.addEventListener("animationend", () => ring.remove());
-  // Whatever was just launched takes the foreground, and that is the moment we
-  // are covered. ADR 0016's power line is that a covered desktop draws nothing,
-  // so the ring goes then too rather than finishing its second behind a window.
-  addEventListener("blur", () => ring.remove(), { once: true });
+  // Deliberately not cut short when the launched app takes the foreground. That
+  // blur lands within a frame or two of the click, so removing the ring on it
+  // deleted the ring every single time — the acknowledgement never survived long
+  // enough to be an acknowledgement. ADR 0016's line is about what a covered
+  // desktop draws while it sits there, not about a one-second answer to a click
+  // that was made while the desktop was in front of the user.
   stageEl.append(ring);
 }
 
