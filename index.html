@@ -117,7 +117,9 @@
     box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.34);
     transition: all .35s var(--ease);
   }
-  .pill:hover { color: #fff; background: rgba(255, 255, 255, 0.1); }
+  /* Colour only: all three pills carry id-level :hover rules with their own
+     background, and an id beats a class, so a background here never landed. */
+  .pill:hover { color: #fff; }
   #tidybtn {
     color: var(--accent-ink); background: var(--accent); border-color: transparent; font-weight: 400;
     box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.4);
@@ -316,7 +318,10 @@
      instead of falling home from where the user last saw them. Last, so it wins
      over the rule above at equal specificity. */
   #grid.instant .tile { transition: none; }
-  .tile:hover { background: rgba(255, 255, 255, 0.1); }
+  /* Has to clear the base, which the fold raised to .10 — at the old .1 this rule
+     resolved to the colour it was already painting and the tile stopped
+     answering the pointer altogether. Sits below the selected .20. */
+  .tile:hover { background: rgba(255, 255, 255, 0.14); }
   /* The selected tile lifts rather than widening: in a grid a widening cell would
      reflow every tile after it, which is the one thing a grid is meant to stop. */
   /* --px/--py are the pointer's position across the tile as -0.5…0.5, and they
