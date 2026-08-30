@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>deskmind 玻璃验收台</title>
+<style>
+  /*
+    Issue #15. Not part of the app: vite builds `index.html` alone, so this page
+    is served in dev and absent from a packaged build.
+
+    It renders the real shader — `startBackground` from src/background.ts, the
+    same one the desktop runs — against a fixed test backdrop, with every term
+    switchable and every constant on a slider. Three manual acceptances failed
+    with "not right, but I can't say which knob"; this exists to turn that into
+    "turn dispersion off and it improves".
+  */
+  :root { --ink: #e8e9ee; --dim: #8b8f9c; --line: rgba(255,255,255,.12); }
+  html, body { margin: 0; height: 100%; background: #0a0b0f; color: var(--ink);
+    font-family: "Noto Sans SC", "Microsoft YaHei", system-ui, sans-serif; font-size: 13px; }
+  body { display: flex; overflow: hidden; }
+
+  #rail {
+    width: 320px; flex: none; height: 100vh; overflow-y: auto; padding: 16px 18px 40px;
+    background: #101219; border-right: 1px solid var(--line); box-sizing: border-box;
+  }
+  #rail h1 { font-size: 14px; font-weight: 500; margin: 0 0 4px; letter-spacing: .04em; }
+  #rail p.note { color: var(--dim); line-height: 1.6; margin: 0 0 16px; font-size: 11.5px; }
+  fieldset { border: 1px solid var(--line); border-radius: 10px; margin: 0 0 14px; padding: 10px 12px 12px; }
+  legend { color: var(--dim); font-size: 11px; letter-spacing: .1em; padding: 0 6px; }
+  label.row { display: flex; align-items: center; gap: 8px; padding: 3px 0; cursor: pointer; }
+  label.row input { accent-color: #6f7bb0; }
+  .knob { display: grid; grid-template-columns: 92px 1fr 54px; align-items: center; gap: 8px; padding: 3px 0; }
+  .knob span { color: var(--dim); font-size: 11.5px; }
+  .knob output { font-variant-numeric: tabular-nums; text-align: right; font-size: 11.5px; }
+  input[type=range] { width: 100%; accent-color: #6f7bb0; }
+  button {
+    font: inherit; font-size: 12px; color: var(--ink); cursor: pointer;
+    background: rgba(255,255,255,.07); border: 1px solid var(--line);
+    border-radius: 8px; padding: 7px 12px;
+  }
+  button:hover { background: rgba(255,255,255,.13); }
+  button.on { background: #6f7bb0; border-color: transparent; color: #0a0b0f; }
+  .buttons { display: flex; gap: 6px; flex-wrap: wrap; }
+  #meanout { color: var(--dim); font-size: 11.5px; margin-top: 8px; }
+  #exported { width: 100%; height: 108px; margin-top: 8px; box-sizing: border-box;
+    background: #0a0b0f; color: var(--ink); border: 1px solid var(--line);
+    border-radius: 8px; font-family: ui-monospace, Consolas, monospace; font-size: 11px; padding: 8px; }
+
+  /* The stage carries the ids startBackground looks for. */
+  #stage { position: relative; flex: 1; height: 100vh; overflow: hidden; }
+  #world { position: absolute; inset: 0; }
+  #wall { position: absolute; inset: 0; background-size: cover; background-position: center; z-index: 0; }
+  #scrim { position: absolute; inset: 0; z-index: 20; }
+  #panel {
+    position: absolute; z-index: 21; box-sizing: border-box;
+    border-radius: 24px; padding: 22px 26px; cursor: grab;
+    display: flex; flex-direction: column; gap: 10px;
+  }
+  #panel.dragging { cursor: grabbing; }
+  #panel .big { font-size: 17px; font-weight: 300; }
+  #panel .small { font-size: 13px; color: rgba(255,255,255,.62); line-height: 1.7; }
+  /* 13px body text is what the contrast condition in #4's standard is written
+     against, so the sample on the panel is 13px and nothing else. */
+
+  /* The reference half. Split by a draggable divider; the panel is drawn on both
+     sides so the same shape can be compared against the reference at the seam. */
+  #refwrap { position: absolute; inset: 0; z-index: 30; pointer-events: none; overflow: hidden; }
+  #ref { position: absolute; inset: 0; background-size: cover; background-position: center;
+    clip-path: inset(0 0 0 50%); }
+  #split { position: absolute; top: 0; bottom: 0; width: 2px; background: rgba(255,255,255,.55);
+    z-index: 31; cursor: col-resize; pointer-events: auto; }
+  #split::after { content: "参照 →"; position: absolute; top: 10px; left: 8px; white-space: nowrap;
+    font-size: 11px; color: rgba(255,255,255,.75); }
+  body.noref #refwrap, body.noref #split { display: none; }
+</style>
+</head>
+<body class="noref">
+  <div id="rail">
+    <h1>玻璃验收台</h1>
+    <p class="note">跑的是 <code>src/background.ts</code> 里的真着色器，不是副本。改动即时生效，不写回源码——满意之后用下面的「导出」把常数拷回 <code>DEFAULT_TUNING</code>。</p>
+
+    <fieldset>
+      <legend>测试背景</legend>
+      <div class="buttons">
+        <button data-bg="dark" class="on">暗</button>
+        <button data-bg="bright">亮</button>
+        <button id="bgfile">自选图片…</button>
+      </div>
+      <div id="meanout"></div>
+    </fieldset>
+
+    <fieldset>
+      <legend>逐项开关</legend>
+      <div id="toggles"></div>
+    </fieldset>
+
+    <fieldset>
+      <legend>旋钮</legend>
+      <div id="knobs"></div>
+    </fieldset>
+
+    <fieldset>
+      <legend>参照</legend>
+      <div class="buttons">
+        <button id="reffile">载入参照截图…</button>
+        <button id="refclear">清除</button>
+      </div>
+      <p class="note" style="margin:8px 0 0">拖动中间那条线左右对比。参照图请截成同样大小、同样背景。</p>
+    </fieldset>
+
+    <fieldset>
+      <legend>导出</legend>
+      <div class="buttons">
+        <button id="export">生成常数</button>
+        <button id="reset">恢复默认</button>
+      </div>
+      <textarea id="exported" readonly placeholder="点「生成常数」"></textarea>
+    </fieldset>
+  </div>
+
+  <div id="stage">
+    <div id="world">
+      <div id="wall"></div>
+    </div>
+    <div id="scrim"></div>
+    <div id="panel">
+      <div class="big">搜索启动项</div>
+      <div class="small">
+        13px 正文。#4 的可读性那条就是拿这一号字对比度算的：<br />
+        亮壁纸下与正后方背景的对比度要 ≥ 4.5:1。
+      </div>
+    </div>
+    <div id="refwrap"><div id="ref"></div></div>
+    <div id="split"></div>
+  </div>
+
+  <input type="file" id="filepick" accept="image/*" hidden />
+  <script type="module" src="/src/bench.ts"></script>
+</body>
+</html>

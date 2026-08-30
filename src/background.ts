@@ -43,6 +43,84 @@ type Occlusion = {
   workArea: [number, number, number, number];
 };
 
+/**
+ * The glass's own numbers, lifted out of the shader source so #15's bench can
+ * move them while looking at the result — and so a failed acceptance can name a
+ * term rather than a feeling.
+ *
+ * The defaults below are exactly the literals they replaced. Nothing about the
+ * shipped look depends on this having been done, and nothing sets them except
+ * the bench.
+ */
+export type Tuning = {
+  /** Displacement at the rim, in device pixels. */
+  bend: number;
+  /** Width of the thickness band, in device pixels. */
+  rim: number;
+  /** Channel spread, as a fraction of the displacement. */
+  dispersion: number;
+  /** Frost, rim to centre, as mip levels. */
+  lod: [number, number];
+  /** Darkening, rim to centre. */
+  dark: [number, number];
+  /** Darkening on the fallback path, where only the wallpaper is refracted. */
+  darkOff: [number, number];
+  /** Accent glow at the rim. */
+  glow: number;
+  /** White specular at the rim. */
+  specular: number;
+  /** Per-term switches: on keeps the term, off removes it. */
+  on: {
+    refract: boolean;
+    dispersion: boolean;
+    frost: boolean;
+    darken: boolean;
+    specular: boolean;
+    glow: boolean;
+    border: boolean;
+    shadow: boolean;
+  };
+};
+
+export const DEFAULT_TUNING: Tuning = {
+  bend: 46,
+  rim: 34,
+  dispersion: 0.03,
+  lod: [1.2, 5.0],
+  dark: [0.16, 0.54],
+  darkOff: [0.06, 0.26],
+  glow: 0.1,
+  specular: 0.34,
+  on: {
+    refract: true,
+    dispersion: true,
+    frost: true,
+    darken: true,
+    specular: true,
+    glow: true,
+    border: true,
+    shadow: true,
+  },
+};
+
+function applyTuning(
+  gl: WebGL2RenderingContext,
+  u: Record<string, WebGLUniformLocation | null>,
+  t: Tuning,
+): void {
+  const bit = (b: boolean) => (b ? 1 : 0);
+  gl.uniform1f(u.tBend!, t.bend);
+  gl.uniform1f(u.tRim!, t.rim);
+  gl.uniform1f(u.tDisp!, t.dispersion);
+  gl.uniform2f(u.tLod!, t.lod[0], t.lod[1]);
+  gl.uniform2f(u.tDark!, t.dark[0], t.dark[1]);
+  gl.uniform2f(u.tDarkOff!, t.darkOff[0], t.darkOff[1]);
+  gl.uniform1f(u.tGlow!, t.glow);
+  gl.uniform1f(u.tSpec!, t.specular);
+  gl.uniform4f(u.fxA!, bit(t.on.refract), bit(t.on.dispersion), bit(t.on.frost), bit(t.on.darken));
+  gl.uniform4f(u.fxB!, bit(t.on.specular), bit(t.on.glow), bit(t.on.border), bit(t.on.shadow));
+}
+
 export type GlassRect = {
   x: number;
   y: number;
@@ -72,6 +150,23 @@ uniform int glassCount;
 uniform float glassAmount;
 uniform vec3 veil;       // darkening alpha at the bottom, middle and top
 uniform float glassOnly; // 1 for the layer that draws nothing but the glass
+
+// The glass's own numbers, promoted out of the source so #15's bench can move
+// them while looking at the result. Defaults are the values they replaced, so
+// nothing about the shipped look depends on this having been done.
+uniform float tBend;     // displacement at the rim, was 46
+uniform float tRim;      // width of the thickness band, was 34
+uniform float tDisp;     // channel spread as a fraction of the offset, was 0.03
+uniform vec2 tLod;       // frost, rim to centre, was (1.2, 5.0)
+uniform vec2 tDark;      // darkening, rim to centre, was (0.16, 0.54)
+uniform vec2 tDarkOff;   // the same, on the fallback path, was (0.06, 0.26)
+uniform float tGlow;     // accent rim glow, was 0.10
+uniform float tSpec;     // white rim specular, was 0.34
+// Per-term switches, so a failed acceptance can name a term instead of a
+// feeling: refract, dispersion, frost, darken.
+uniform vec4 fxA;
+// specular, accent glow, border, shadow.
+uniform vec4 fxB;
 uniform sampler2D ui;    // the live interface, captured through HTML-in-Canvas
 uniform float hasUi;     // 0 when the capture is unavailable
 
@@ -196,7 +291,7 @@ void main() {
   // Well outside: the panel's shadow, drawn here so the CSS box-shadow can go. A
   // shader shadow follows the same rounded rectangle the glass does, so the two
   // can never disagree about where the panel is.
-  float shadow = (1.0 - smoothstep(0.0, 30.0, max(d, 0.0))) * 0.42 * glassAmount;
+  float shadow = (1.0 - smoothstep(0.0, 30.0, max(d, 0.0))) * 0.42 * glassAmount * fxB.w;
   if (d > 1.0) {
     outColor = vec4(0.0, 0.0, 0.0, shadow);
     return;
@@ -212,8 +307,7 @@ void main() {
   // enough to see — at 26px the whole effect happened inside a hairline.
   // Tighter than before: concentrating the bend near the edge reads as glass,
   // spreading it wide reads as a water film.
-  const float RIM = 34.0;
-  float depth = smoothstep(0.0, -RIM, d);
+  float depth = smoothstep(0.0, -max(tRim, 1.0), d);
 
   // Surface normal from the gradient of the distance field.
   vec2 e = vec2(1.0, 0.0);
@@ -227,18 +321,19 @@ void main() {
   // refraction should be something you notice only when you look for it.
   // A touch stronger than looks right on its own: the panel lays a 34px blur over
   // this, which softens the displacement, so the bend has to survive it.
-  float bend = (1.0 - depth) * 46.0 * glassAmount;
+  float bend = (1.0 - depth) * tBend * glassAmount * fxA.x;
   vec2 offset = n * bend;
 
   // A touch of dispersion: the channels bend by slightly different amounts.
   // Frosted through the middle, clearer at the bevel — the refraction is only
   // legible where the picture still has detail, and the text only readable where
   // it does not.
-  float lod = mix(1.2, 5.0, depth);
+  float lod = mix(tLod.x, tLod.y, depth) * fxA.z;
+  float disp = tDisp * fxA.y;
   vec3 col;
-  col.r = behind((frag + offset * 1.03) / res, lod).r;
+  col.r = behind((frag + offset * (1.0 + disp)) / res, lod).r;
   col.g = behind((frag + offset) / res, lod).g;
-  col.b = behind((frag + offset * 0.97) / res, lod).b;
+  col.b = behind((frag + offset * (1.0 - disp)) / res, lod).b;
 
   // Nothing dims behind an open panel: the lift lives on the panel itself, so
   // darkening the rest of the screen would undo the point of it.
@@ -252,20 +347,21 @@ void main() {
   // Ultra clear, iOS 27's "极清" end of the scale: the wallpaper reads straight
   // through the panel and the depth comes entirely from the refraction. Only a
   // gentle ramp toward the middle, where the text sits.
-  float darkness = hasUi > 0.5 ? mix(0.16, 0.54, depth) : mix(0.06, 0.26, depth);
-  col = mix(col, col * 0.30, darkness * glassAmount);
+  float darkness = hasUi > 0.5 ? mix(tDark.x, tDark.y, depth)
+                               : mix(tDarkOff.x, tDarkOff.y, depth);
+  col = mix(col, col * 0.30, darkness * glassAmount * fxA.w);
 
   // The signature of Liquid Glass is a thin, crisp specular line right at the
   // bevel — not a wide halo. Anything broad here reads as a second frame just
   // outside the DOM's 1px border.
-  col += accent * pow(1.0 - depth, 3.0) * 0.10 * glassAmount;
-  col += vec3(1.0) * pow(1.0 - depth, 14.0) * 0.34 * glassAmount;
+  col += accent * pow(1.0 - depth, 3.0) * tGlow * glassAmount * fxB.y;
+  col += vec3(1.0) * pow(1.0 - depth, 14.0) * tSpec * glassAmount * fxB.x;
 
   // The hairline border, from the same distance field. Drawn here rather than in
   // CSS so it lands exactly on the glass edge — two systems each drawing their
   // own border is what produced the doubled frame.
   float line = 1.0 - smoothstep(0.0, 1.6, abs(d + 0.8));
-  col = mix(col, vec3(1.0), line * 0.20 * glassAmount);
+  col = mix(col, vec3(1.0), line * 0.20 * glassAmount * fxB.z);
 
   // Fade the panel into its own shadow across that same pixel of coverage.
   outColor = vec4(mix(vec3(0.0), col, cover), mix(shadow, 1.0, cover));
@@ -406,6 +502,7 @@ function makeLayer(zIndex: number, glassOnly: boolean, after: Element): Layer | 
   const names = [
     "res", "time", "accent", "wallpaper", "hasWallpaper", "wallAspect",
     "glassRect[0]", "glassRadius[0]", "glassCount", "glassAmount", "veil", "glassOnly", "ui", "hasUi",
+    "tBend", "tRim", "tDisp", "tLod", "tDark", "tDarkOff", "tGlow", "tSpec", "fxA", "fxB",
   ];
   const u: Record<string, WebGLUniformLocation | null> = {};
   for (const n of names) u[n] = gl.getUniformLocation(program, n);
@@ -428,6 +525,7 @@ function makeLayer(zIndex: number, glassOnly: boolean, after: Element): Layer | 
   gl.uniform1f(u.glassOnly!, glassOnly ? 1 : 0);
   gl.uniform1i(u.ui!, 1);
   gl.uniform1f(u.hasUi!, 0);
+  applyTuning(gl, u, DEFAULT_TUNING);
   gl.enable(gl.BLEND);
   gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
 
@@ -449,6 +547,8 @@ export type Scene = {
   /** Pass an empty list to dissolve the glass. CSS pixels, y from the top. */
   setGlass(rects: GlassRect[]): void;
   setVeil(brightness: number): void;
+  /** #15's bench only. Production never calls this, so the defaults stand. */
+  setTuning(t: Tuning): void;
   /** Any interaction with our own interface proves somebody is looking. */
   wake(): void;
 };
@@ -695,6 +795,14 @@ export function startBackground(watchOcclusion: boolean): Scene | null {
       };
       img.onerror = () => console.error("壁纸纹理加载失败", url);
       img.src = url;
+    },
+    setTuning(t: Tuning): void {
+      forEach((l) => {
+        l.gl.useProgram(l.program);
+        applyTuning(l.gl, l.u, t);
+      });
+      hidden = false;
+      resume();
     },
     wake(): void {
       hidden = false;
