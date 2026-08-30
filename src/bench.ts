@@ -191,8 +191,9 @@ type Knob = {
 };
 
 const KNOBS: Knob[] = [
-  { label: "bend", min: 0, max: 160, step: 1, get: () => tuning.bend, set: (v) => (tuning.bend = v) },
-  { label: "RIM", min: 1, max: 140, step: 1, get: () => tuning.rim, set: (v) => (tuning.rim = v) },
+  { label: "折射率", min: 1, max: 2.4, step: 0.01, get: () => tuning.ior, set: (v) => (tuning.ior = v) },
+  { label: "厚度", min: 0, max: 160, step: 1, get: () => tuning.thickness, set: (v) => (tuning.thickness = v) },
+  { label: "斜面宽", min: 1, max: 140, step: 1, get: () => tuning.rim, set: (v) => (tuning.rim = v) },
   { label: "色散", min: 0, max: 0.3, step: 0.005, get: () => tuning.dispersion, set: (v) => (tuning.dispersion = v) },
   { label: "磨砂 边", min: 0, max: 8, step: 0.1, get: () => tuning.lod[0], set: (v) => (tuning.lod[0] = v) },
   { label: "磨砂 心", min: 0, max: 8, step: 0.1, get: () => tuning.lod[1], set: (v) => (tuning.lod[1] = v) },
@@ -316,7 +317,8 @@ el("export").addEventListener("click", () => {
   const f = (n: number): string => (Number.isInteger(n) ? n.toFixed(1) : String(n));
   el<HTMLTextAreaElement>("exported").value =
     `export const DEFAULT_TUNING: Tuning = {\n` +
-    `  bend: ${f(tuning.bend)},\n` +
+    `  ior: ${tuning.ior},\n` +
+    `  thickness: ${f(tuning.thickness)},\n` +
     `  rim: ${f(tuning.rim)},\n` +
     `  dispersion: ${tuning.dispersion},\n` +
     `  lod: [${f(tuning.lod[0])}, ${f(tuning.lod[1])}],\n` +

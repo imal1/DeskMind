@@ -53,11 +53,13 @@ type Occlusion = {
  * the bench.
  */
 export type Tuning = {
-  /** Displacement at the rim, in device pixels. */
-  bend: number;
-  /** Width of the thickness band, in device pixels. */
+  /** Index of refraction of the slab. 1 is air, ~1.5 is window glass. */
+  ior: number;
+  /** How deep the slab is, in device pixels. Sets how far the bend carries. */
+  thickness: number;
+  /** Width of the bevel, in device pixels. */
   rim: number;
-  /** Channel spread, as a fraction of the displacement. */
+  /** Spread between the channels' indices. Real dispersion, not a scaled offset. */
   dispersion: number;
   /** Frost, rim to centre, as mip levels. */
   lod: [number, number];
@@ -83,7 +85,8 @@ export type Tuning = {
 };
 
 export const DEFAULT_TUNING: Tuning = {
-  bend: 46,
+  ior: 1.45,
+  thickness: 34,
   rim: 34,
   dispersion: 0.03,
   lod: [1.2, 5.0],
@@ -109,7 +112,8 @@ function applyTuning(
   t: Tuning,
 ): void {
   const bit = (b: boolean) => (b ? 1 : 0);
-  gl.uniform1f(u.tBend!, t.bend);
+  gl.uniform1f(u.tIor!, t.ior);
+  gl.uniform1f(u.tThick!, t.thickness);
   gl.uniform1f(u.tRim!, t.rim);
   gl.uniform1f(u.tDisp!, t.dispersion);
   gl.uniform2f(u.tLod!, t.lod[0], t.lod[1]);
@@ -154,8 +158,9 @@ uniform float glassOnly; // 1 for the layer that draws nothing but the glass
 // The glass's own numbers, promoted out of the source so #15's bench can move
 // them while looking at the result. Defaults are the values they replaced, so
 // nothing about the shipped look depends on this having been done.
-uniform float tBend;     // displacement at the rim, was 46
-uniform float tRim;      // width of the thickness band, was 34
+uniform float tIor;      // index of refraction of the slab
+uniform float tThick;    // how deep the slab is, in device pixels
+uniform float tRim;      // width of the bevel, in device pixels
 uniform float tDisp;     // channel spread as a fraction of the offset, was 0.03
 uniform vec2 tLod;       // frost, rim to centre, was (1.2, 5.0)
 uniform vec2 tDark;      // darkening, rim to centre, was (0.16, 0.54)
@@ -255,6 +260,19 @@ float sdRoundBox(vec2 p, vec2 half_size, float r) {
 /// a wash over the picture rather than to a black screen.
 float sceneAlpha() { return hasWallpaper > 0.5 ? 1.0 : 0.55; }
 
+/// Where a pixel on the glass reads the backdrop from: refract the view ray at
+/// the bevel, then follow it down through the slab.
+///
+/// Dispersion falls out of this rather than being painted on — the three
+/// channels are given three different indices, so they leave at three different
+/// angles the way they do in glass, instead of being the same offset scaled by
+/// three amounts, which only ever produced a doubled edge.
+vec2 lens(vec3 N, float ior) {
+  vec3 R = refract(vec3(0.0, 0.0, -1.0), N, 1.0 / max(ior, 1.0));
+  if (R.z > -1e-4) return vec2(0.0);
+  return R.xy * (tThick / -R.z);
+}
+
 void main() {
   vec2 frag = gl_FragCoord.xy;
   vec2 uv = frag / res;
@@ -309,31 +327,38 @@ void main() {
   // spreading it wide reads as a water film.
   float depth = smoothstep(0.0, -max(tRim, 1.0), d);
 
-  // Surface normal from the gradient of the distance field.
+  // Which way is out, from the gradient of the distance field.
   vec2 e = vec2(1.0, 0.0);
   vec2 n = normalize(vec2(
     sdRoundBox(frag - center + e.xy, half_size, radius) - sdRoundBox(frag - center - e.xy, half_size, radius),
     sdRoundBox(frag - center + e.yx, half_size, radius) - sdRoundBox(frag - center - e.yx, half_size, radius)
   ) + 1e-6);
 
-  // Bending is strongest where the glass is thinnest, i.e. at the rim. Kept small
-  // on purpose: the design asks for no neon and borders at 8–20% white, so the
-  // refraction should be something you notice only when you look for it.
-  // A touch stronger than looks right on its own: the panel lays a 34px blur over
-  // this, which softens the displacement, so the bend has to survive it.
-  float bend = (1.0 - depth) * tBend * glassAmount * fxA.x;
-  vec2 offset = n * bend;
+  // The bevel, as a quarter-round: u is 1 at the very edge and 0 where the slab
+  // goes flat, so the surface stands on end at the rim and lies flat inside.
+  //
+  // Linear in distance rather than reusing depth, which is a smoothstep. The
+  // smoothstep is the right shape for how much to frost and darken; it is the
+  // wrong shape for a piece of geometry, and a bevel built on it has no edge.
+  float u = 1.0 - clamp(-d / max(tRim, 1.0), 0.0, 1.0);
 
-  // A touch of dispersion: the channels bend by slightly different amounts.
-  // Frosted through the middle, clearer at the bevel — the refraction is only
-  // legible where the picture still has detail, and the text only readable where
-  // it does not.
+  // A real surface normal, with a z. This is the whole of the change: the old
+  // version displaced the sample along the 2D normal by an amount that fell off
+  // toward the middle, which smears the edge outwards but never refracts —
+  // without a z there is no angle of incidence, so no index of refraction and no
+  // thickness for light to cross.
+  vec3 N = normalize(vec3(n * u, sqrt(max(1.0 - u * u, 1e-4))));
+
+  // Refract the view ray at that surface, then carry it down through the slab to
+  // the backdrop. Where it lands is what this pixel sees. Entering a denser
+  // medium never reflects internally, so the grazing case at the rim is safe, but
+  // the ray still has to be travelling downward before it can be divided by.
   float lod = mix(tLod.x, tLod.y, depth) * fxA.z;
-  float disp = tDisp * fxA.y;
+  float spread = tDisp * fxA.y;
   vec3 col;
-  col.r = behind((frag + offset * (1.0 + disp)) / res, lod).r;
-  col.g = behind((frag + offset) / res, lod).g;
-  col.b = behind((frag + offset * (1.0 - disp)) / res, lod).b;
+  col.r = behind((frag + lens(N, tIor - spread) * fxA.x) / res, lod).r;
+  col.g = behind((frag + lens(N, tIor) * fxA.x) / res, lod).g;
+  col.b = behind((frag + lens(N, tIor + spread) * fxA.x) / res, lod).b;
 
   // Nothing dims behind an open panel: the lift lives on the panel itself, so
   // darkening the rest of the screen would undo the point of it.
@@ -502,7 +527,7 @@ function makeLayer(zIndex: number, glassOnly: boolean, after: Element): Layer | 
   const names = [
     "res", "time", "accent", "wallpaper", "hasWallpaper", "wallAspect",
     "glassRect[0]", "glassRadius[0]", "glassCount", "glassAmount", "veil", "glassOnly", "ui", "hasUi",
-    "tBend", "tRim", "tDisp", "tLod", "tDark", "tDarkOff", "tGlow", "tSpec", "fxA", "fxB",
+    "tIor", "tThick", "tRim", "tDisp", "tLod", "tDark", "tDarkOff", "tGlow", "tSpec", "fxA", "fxB",
   ];
   const u: Record<string, WebGLUniformLocation | null> = {};
   for (const n of names) u[n] = gl.getUniformLocation(program, n);
