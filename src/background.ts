@@ -61,8 +61,10 @@ export type Tuning = {
   rim: number;
   /** Spread between the channels' indices. Real dispersion, not a scaled offset. */
   dispersion: number;
-  /** Frost, rim to centre, as mip levels. */
+  /** Frost, rim to centre, as mip levels. Pre-filter for the gather below. */
   lod: [number, number];
+  /** How far the frost gathers from at the centre, in device pixels. */
+  blur: number;
   /** Darkening, rim to centre. */
   dark: [number, number];
   /** Darkening on the fallback path, where only the wallpaper is refracted. */
@@ -94,7 +96,8 @@ export const DEFAULT_TUNING: Tuning = {
   thickness: 34,
   rim: 34,
   dispersion: 0.03,
-  lod: [1.2, 5.0],
+  lod: [1.2, 3.0],
+  blur: 22,
   dark: [0.16, 0.54],
   darkOff: [0.06, 0.26],
   glow: 0.1,
@@ -125,6 +128,7 @@ function applyTuning(
   gl.uniform1f(u.tRim!, t.rim);
   gl.uniform1f(u.tDisp!, t.dispersion);
   gl.uniform2f(u.tLod!, t.lod[0], t.lod[1]);
+  gl.uniform1f(u.tBlur!, t.blur);
   gl.uniform2f(u.tDark!, t.dark[0], t.dark[1]);
   gl.uniform2f(u.tDarkOff!, t.darkOff[0], t.darkOff[1]);
   gl.uniform1f(u.tGlow!, t.glow);
@@ -174,6 +178,7 @@ uniform float tThick;    // how deep the slab is, in device pixels
 uniform float tRim;      // width of the bevel, in device pixels
 uniform float tDisp;     // channel spread as a fraction of the offset, was 0.03
 uniform vec2 tLod;       // frost, rim to centre, was (1.2, 5.0)
+uniform float tBlur;     // how far the frost gathers from, in device pixels
 uniform vec2 tDark;      // darkening, rim to centre, was (0.16, 0.54)
 uniform vec2 tDarkOff;   // the same, on the fallback path, was (0.06, 0.26)
 uniform float tGlow;     // accent rim glow, was 0.10
@@ -289,6 +294,31 @@ vec2 lens(vec3 N, float ior) {
   return R.xy * (tThick / -R.z);
 }
 
+const int TAPS = 8;
+
+/// Gathers the backdrop over a disc rather than taking one mip fetch.
+///
+/// A single textureLod is a box pyramid, and at the levels the middle of a panel
+/// asks for it is sampling a thirty-second of the image: what comes back is
+/// blocky, with visible steps where one level gives way to the next. Real frost
+/// is a continuous gather, and the material this is imitating is frosted — the
+/// blur is the body of it, not a finish applied to it.
+///
+/// Taps are laid on a golden-angle spiral, which spaces them evenly without the
+/// rotational banding a ring produces. The mip level is kept as a pre-filter so
+/// each tap is already area-averaged and the taps do not alias against each
+/// other.
+vec3 gather(vec2 px, float lod, float radius) {
+  if (radius < 0.5) return behind(px / res, lod);
+  vec3 sum = behind(px / res, lod);
+  for (int i = 0; i < TAPS; i++) {
+    float a = float(i) * 2.39996;
+    float r = sqrt((float(i) + 0.5) / float(TAPS)) * radius;
+    sum += behind((px + vec2(cos(a), sin(a)) * r) / res, lod);
+  }
+  return sum / float(TAPS + 1);
+}
+
 void main() {
   vec2 frag = gl_FragCoord.xy;
   vec2 uv = frag / res;
@@ -371,10 +401,19 @@ void main() {
   // the ray still has to be travelling downward before it can be divided by.
   float lod = mix(tLod.x, tLod.y, depth) * fxA.z;
   float spread = tDisp * fxA.y;
-  vec3 col;
-  col.r = behind((frag + lens(N, tIor - spread) * fxA.x) / res, lod).r;
-  col.g = behind((frag + lens(N, tIor) * fxA.x) / res, lod).g;
-  col.b = behind((frag + lens(N, tIor + spread) * fxA.x) / res, lod).b;
+  vec2 pr = frag + lens(N, tIor - spread) * fxA.x;
+  vec2 pg = frag + lens(N, tIor) * fxA.x;
+  vec2 pb = frag + lens(N, tIor + spread) * fxA.x;
+
+  // The bevel stays clear and splits the channels; the body is frosted and does
+  // not. Dispersion is an edge effect — a few pixels of channel offset inside a
+  // disc gathered over twenty is invisible, and paying three times the taps to
+  // hide it there would be paying for nothing.
+  vec3 sharp;
+  sharp.r = behind(pr / res, lod).r;
+  sharp.g = behind(pg / res, lod).g;
+  sharp.b = behind(pb / res, lod).b;
+  vec3 col = mix(sharp, gather(pg, lod, tBlur * depth * fxA.z), depth * fxA.z);
 
   // Nothing dims behind an open panel: the lift lives on the panel itself, so
   // darkening the rest of the screen would undo the point of it.
@@ -565,7 +604,7 @@ function makeLayer(zIndex: number, glassOnly: boolean, after: Element): Layer | 
   const names = [
     "res", "time", "accent", "wallpaper", "hasWallpaper", "wallAspect",
     "glassRect[0]", "glassRadius[0]", "glassCount", "glassAmount", "veil", "glassOnly", "ui", "hasUi",
-    "tIor", "tThick", "tRim", "tDisp", "tLod", "tDark", "tDarkOff", "tGlow", "tSpec",
+    "tIor", "tThick", "tRim", "tDisp", "tLod", "tBlur", "tDark", "tDarkOff", "tGlow", "tSpec",
     "tShine", "tEnv", "tLight", "fxA", "fxB", "fxC",
   ];
   const u: Record<string, WebGLUniformLocation | null> = {};
