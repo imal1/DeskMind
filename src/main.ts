@@ -1,4 +1,5 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { listen } from "@tauri-apps/api/event";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { rank } from "./match";
 import { deskStats, moveInGrid, scatterAt, sinceTidy, tiltAt, type ArrowKey } from "./desk";
@@ -1691,6 +1692,13 @@ async function load(): Promise<void> {
     await loadZones();
     paint();
     void loadIcons();
+    // The summon hotkey, registered in Rust. It has already taken the keyboard
+    // for us by the time this arrives, so there is nothing to do but open.
+    void listen("dm://summon", () => {
+      if (firstOpen) return;
+      background?.wake();
+      openSearch();
+    });
     void win.onDragDropEvent((e) => {
       if (e.payload.type === "drop" && e.payload.paths.length > 0) {
         void addTargets(e.payload.paths);

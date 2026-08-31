@@ -12,6 +12,7 @@ mod zones;
 
 use std::collections::HashMap;
 use tauri::{
+    Emitter,
     menu::{Menu, MenuItem},
     tray::TrayIconBuilder,
     AppHandle, Manager, State, WebviewWindow,
@@ -393,6 +394,55 @@ pub fn run() {
                     }
                 })
                 .build(app)?;
+
+            // The summon hotkey. The settings panel has claimed one since before
+            // anything registered it, and the value it claimed — Alt+Space — is
+            // Windows' own window menu, so it could never have worked.
+            //
+            // Ctrl+Alt+Space instead, chosen around the input method rather than
+            // around what is free: Ctrl+Space toggles the IME on a Chinese
+            // Windows and Alt+Shift cycles keyboard layouts. Typing Chinese into
+            // the search box is the core interaction here (ADR 0016), so a hotkey
+            // that fights the IME would break the thing it exists to open.
+            {
+                use tauri_plugin_global_shortcut::{
+                    Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState,
+                };
+
+                let summon = Shortcut::new(
+                    Some(Modifiers::CONTROL | Modifiers::ALT),
+                    Code::Space,
+                );
+                app.handle().plugin(
+                    tauri_plugin_global_shortcut::Builder::new()
+                        .with_handler(move |app, _shortcut, event| {
+                            // Press only. Without this the release fires a second
+                            // time and the panel opens, then opens again.
+                            if event.state() != ShortcutState::Pressed {
+                                return;
+                            }
+                            let Some(surface) = app.get_webview_window(DESKTOP) else {
+                                return;
+                            };
+                            // Focus first: the desktop surface never takes the
+                            // keyboard on its own (ADR 0015), so a search box that
+                            // appeared without this would swallow nothing.
+                            if let Ok(handle) = desktop::handle_of(&surface) {
+                                desktop::grab_focus(handle);
+                            }
+                            let _ = surface.emit("dm://summon", ());
+                        })
+                        .build(),
+                )?;
+
+                // Registered separately, and a failure here is reported rather
+                // than propagated. A hotkey another program already owns is a
+                // hotkey that does not work; it is not a reason for the desktop
+                // to refuse to start, and `?` here would have made it one.
+                if let Err(err) = app.global_shortcut().register(summon) {
+                    eprintln!("唤出热键 Ctrl+Alt+Space 注册失败，可能被其它程序占用：{err}");
+                }
+            }
 
             // Settle *after* showing. Tauri writes the extended style itself while
             // acting on decorations/skipTaskbar/shadow, so styling first left the

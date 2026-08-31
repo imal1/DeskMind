@@ -3,5 +3,5 @@
   "identifier": "default",
   "description": "deskmind 桌面窗口所需的权限",
   "windows": ["desktop"],
-  "permissions": ["core:default"]
+  "permissions": ["core:default", "global-shortcut:default"]
 }

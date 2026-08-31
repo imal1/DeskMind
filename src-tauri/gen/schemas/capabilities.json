@@ -1,1 +1,1 @@
-{"default":{"identifier":"default","description":"deskmind 桌面窗口所需的权限","local":true,"windows":["desktop"],"permissions":["core:default"]}}
+{"default":{"identifier":"default","description":"deskmind 桌面窗口所需的权限","local":true,"windows":["desktop"],"permissions":["core:default","global-shortcut:default"]}}
