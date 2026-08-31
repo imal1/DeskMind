@@ -136,6 +136,9 @@ function syncGlass(): void {
     panels.map((p) => {
       const b = p.getBoundingClientRect();
       return {
+        // Identity, so dragging follows a panel instead of replacing it — which
+        // is what makes the damped lag visible at all.
+        key: p.id,
         x: b.left - s.left,
         y: b.top - s.top,
         width: b.width,

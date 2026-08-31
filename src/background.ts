@@ -144,13 +144,44 @@ function applyTuning(
   gl.uniform4f(u.fxC!, bit(t.on.env), 0, 0, 0);
 }
 
-export type GlassRect = {
+export type Box = {
   x: number;
   y: number;
   width: number;
   height: number;
   radius: number;
 };
+
+export type GlassRect = Box & {
+  /**
+   * Identity across calls. `setGlass` is handed the whole list every time, so
+   * without this a panel that moved would be indistinguishable from one panel
+   * vanishing and another appearing — and nothing could be followed.
+   */
+  key?: string;
+  /**
+   * Where it grows out of, and shrinks back into. The button that opened it, or
+   * the pointer for a menu. Left out, it grows from its own centre.
+   */
+  from?: Box;
+};
+
+const mixBox = (a: Box, b: Box, t: number): Box => ({
+  x: a.x + (b.x - a.x) * t,
+  y: a.y + (b.y - a.y) * t,
+  width: a.width + (b.width - a.width) * t,
+  height: a.height + (b.height - a.height) * t,
+  radius: a.radius + (b.radius - a.radius) * t,
+});
+
+/** A panel with no stated origin grows out of its own middle, from nothing. */
+const pip = (b: Box): Box => ({
+  x: b.x + b.width / 2,
+  y: b.y + b.height / 2,
+  width: 0,
+  height: 0,
+  radius: 0,
+});
 
 const VERT = `#version 300 es
 in vec2 pos;
@@ -724,7 +755,48 @@ export function startBackground(watchOcclusion: boolean): Scene | null {
    * things from since before any of this was on a screen.
    */
   let light: { x: number; y: number } | null = null;
-  let target: GlassRect[] = [];
+  /**
+   * The panels the shader is drawing, as state it owns rather than as a list
+   * handed in each frame.
+   *
+   * This is what lets a panel deform rather than fade: `life` carries it out of
+   * `seed` — the thing that was clicked — and into `goal`, and back again when it
+   * leaves. `goal` itself chases the DOM rectangle at a lag, so a panel that
+   * moves is followed rather than teleported to.
+   *
+   * It also retires the rule that a glass panel may not move on entry. That rule
+   * existed because the rectangle was measured once, in CSS pixels, and could not
+   * track a CSS animation. Nothing is measured once any more.
+   */
+  type Live = {
+    key: string;
+    seed: Box;
+    want: Box;
+    goal: Box;
+    life: number;
+    leaving: boolean;
+  };
+  let live: Live[] = [];
+  let lastNow = -1;
+
+  /** Where each panel is this frame, after presence and lag are applied. */
+  function shapes(): Box[] {
+    return live.map((l) => mixBox(l.seed, l.goal, l.life * l.life * (3 - 2 * l.life)));
+  }
+
+  function advance(now: number): void {
+    const dt = lastNow < 0 ? 16 : Math.min(64, now - lastNow);
+    lastNow = now;
+    // Presence over ~220ms; the chase is exponential, so it is framerate
+    // independent rather than a fixed fraction per frame.
+    const step = dt / 220;
+    const chase = 1 - Math.pow(0.002, dt / 240);
+    for (const l of live) {
+      l.life = Math.min(1, Math.max(0, l.life + (l.leaving ? -step : step)));
+      l.goal = mixBox(l.goal, l.want, chase);
+    }
+    live = live.filter((l) => !(l.leaving && l.life <= 0));
+  }
   let amount = 0;
 
   // Capturing the interface is a full repaint into a texture, so it only runs
@@ -799,7 +871,8 @@ export function startBackground(watchOcclusion: boolean): Scene | null {
     // slowly enough to live on a frame budget (see IDLE_FRAME). A millisecond of
     // slack because rAF lands a hair early as often as late — without it every
     // other slot is missed and the budget halves itself.
-    const idle = target.length === 0 && amount < 0.01;
+    advance(now);
+    const idle = live.length === 0 && amount < 0.01;
     // Full rate only while the glass is on its way in or out; once it has
     // settled there is a budget again.
     const settling = amount > 0.001 && amount < 0.999;
@@ -807,7 +880,7 @@ export function startBackground(watchOcclusion: boolean): Scene | null {
     if (budget > 0 && now - lastFrame < budget - 1) return;
     lastFrame = now;
 
-    const want = target.length > 0 ? 1 : 0;
+    const want = live.some((l) => !l.leaving) ? 1 : 0;
     // Quick: the panel it belongs to fades in over 200ms, and glass arriving
     // later than its own panel reads as lag.
     amount += (want - amount) * 0.34;
@@ -816,7 +889,8 @@ export function startBackground(watchOcclusion: boolean): Scene | null {
 
     // Only while there is glass to draw, and only once the panel rectangles are
     // known — a capture with no panel on screen would be pure waste.
-    if (target.length > 0 && showingGlass) refreshUi(now);
+    const drawn = shapes();
+    if (drawn.length > 0 && showingGlass) refreshUi(now);
 
     for (const layer of layers) {
       const { canvas, gl, u } = layer;
@@ -866,11 +940,11 @@ export function startBackground(watchOcclusion: boolean): Scene | null {
         gl.bindTexture(gl.TEXTURE_2D, layer.texture);
       }
       let rectsForScissor: number[] = [];
-      if (target.length > 0) {
+      if (drawn.length > 0) {
         // CSS pixels count y from the top; gl_FragCoord counts from the bottom.
         const rects: number[] = [];
         const radii: number[] = [];
-        for (const r of target.slice(0, 6)) {
+        for (const r of drawn.slice(0, 6)) {
           rects.push(
             r.x * scale,
             (canvas.clientHeight - r.y - r.height) * scale,
@@ -907,7 +981,7 @@ export function startBackground(watchOcclusion: boolean): Scene | null {
       // One scissored pass per panel. Overlapping boxes get shaded twice, which
       // costs a little and changes nothing: the shader picks the nearest surface
       // out of the same list either way, so both passes write the same pixel.
-      if (isGlass && showingGlass && target.length > 0) {
+      if (isGlass && showingGlass && drawn.length > 0) {
         gl.enable(gl.SCISSOR_TEST);
         for (let i = 0; i < rectsForScissor.length; i += 4) {
           // Padding covers the shadow, which reaches 30px past the edge and is
@@ -945,7 +1019,7 @@ export function startBackground(watchOcclusion: boolean): Scene | null {
       // is interacting with it, so somebody is looking. Consulting the shell here
       // was leaving the desktop surface paused with a panel open on top of it,
       // and the glass never appeared.
-      if (target.length > 0) {
+      if (live.length > 0) {
         if (hidden) {
           hidden = false;
           resume();
@@ -1020,7 +1094,39 @@ export function startBackground(watchOcclusion: boolean): Scene | null {
       resume();
     },
     setGlass(rects: GlassRect[]): void {
-      target = rects;
+      const seen = new Set<string>();
+      rects.forEach((r, i) => {
+        const key = r.key ?? `#${i}`;
+        seen.add(key);
+        const box: Box = {
+          x: r.x,
+          y: r.y,
+          width: r.width,
+          height: r.height,
+          radius: r.radius,
+        };
+        const had = live.find((l) => l.key === key);
+        if (had) {
+          had.want = box;
+          had.leaving = false;
+          return;
+        }
+        // New. It starts as whatever opened it and grows into place; `goal`
+        // begins at the destination so the lag has nothing to catch up on and
+        // the arrival is the deformation, not a slide as well.
+        live.push({
+          key,
+          seed: r.from ?? pip(box),
+          want: box,
+          goal: box,
+          life: 0,
+          leaving: false,
+        });
+      });
+      // Anything no longer named is on its way out, back into whatever it came
+      // from. It keeps drawing until it has finished.
+      for (const l of live) if (!seen.has(l.key)) l.leaving = true;
+
       // A panel being open is proof the surface is being looked at, whatever a
       // stale occlusion probe still says.
       if (rects.length > 0) hidden = false;

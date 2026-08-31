@@ -3,7 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { rank } from "./match";
 import { deskStats, moveInGrid, scatterAt, sinceTidy, tiltAt, type ArrowKey } from "./desk";
-import { isSoftware, startBackground, type Scene } from "./background";
+import { isSoftware, startBackground, type Box, type Scene } from "./background";
 
 type LaunchTarget = {
   name: string;
@@ -201,7 +201,11 @@ function menuSep(): HTMLElement {
 }
 
 /** Shows the one menu element at (x, y), nudged back inside the viewport. */
+/** Where the last menu was summoned from, so its glass can grow out of it. */
+let ctxFrom = { x: 0, y: 0 };
+
 function openMenu(nodes: HTMLElement[], x: number, y: number): void {
+  ctxFrom = { x, y };
   ctxEl.replaceChildren(...nodes);
 
   // Show first so the measured size is real, then nudge.
@@ -1401,6 +1405,31 @@ let background: Scene | null = null;
  * a context menu and the search overlay can be up together, and glass on only one
  * of them looks worse than glass on none.
  */
+/**
+ * The thing a panel should look like it came out of.
+ *
+ * A search box that grows from the button you pressed says what opened it; one
+ * that fades in says only that something appeared. The menu grows from the
+ * pointer for the same reason. First-run has no opener — nothing was clicked —
+ * so it is left to grow from its own middle.
+ */
+function originFor(panel: HTMLElement): Box | undefined {
+  const fromEl = (el: HTMLElement): Box => {
+    const b = el.getBoundingClientRect();
+    return {
+      x: b.left,
+      y: b.top,
+      width: b.width,
+      height: b.height,
+      radius: parseFloat(getComputedStyle(el).borderTopLeftRadius) || 0,
+    };
+  };
+  if (panel === searchEl) return fromEl(el("searchbtn"));
+  if (panel === settingsEl) return fromEl(el("setbtn"));
+  if (panel === ctxEl) return { ...ctxFrom, width: 0, height: 0, radius: 0 };
+  return undefined;
+}
+
 function refreshGlass(): void {
   if (!background) return;
 
@@ -1411,11 +1440,17 @@ function refreshGlass(): void {
   background.setGlass(
     panels.map((p) => {
       p.classList.add("glassed");
+      // What each one grows out of. The shader carries it from here to the
+      // panel's own rectangle, so the glass arrives by deforming rather than by
+      // fading on in its finished shape.
+      const from = originFor(p);
       // Measured after the class lands and after the entry animation settles —
       // reading mid-animation gives a rectangle a few pixels off from where the
       // panel comes to rest, which shows as a second frame outside the border.
       const box = p.getBoundingClientRect();
       return {
+        key: p.id,
+        from,
         x: box.left,
         y: box.top,
         width: box.width,
