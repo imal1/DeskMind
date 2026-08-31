@@ -67,10 +67,17 @@ export type Tuning = {
   blur: number;
   /** How close two panels have to be before they pull at each other, in pixels. */
   merge: number;
-  /** Darkening, rim to centre. */
+  /** Floor and ceiling on the darkening. Between them the backdrop decides. */
   dark: [number, number];
-  /** Darkening on the fallback path, where only the wallpaper is refracted. */
-  darkOff: [number, number];
+  /**
+   * The background luminance 13px body text needs to sit on.
+   *
+   * Near-white ink is about 0.91 relative luminance, and WCAG's 4.5:1 wants
+   * (0.91 + 0.05) / (L + 0.05) >= 4.5, so L <= 0.163.
+   */
+  target: number;
+  /** How far the glass shifts in hue against what is behind it. */
+  tint: number;
   /** Accent glow at the rim. */
   glow: number;
   /** White specular at the rim. */
@@ -101,8 +108,9 @@ export const DEFAULT_TUNING: Tuning = {
   lod: [1.2, 3.0],
   blur: 22,
   merge: 28,
-  dark: [0.16, 0.54],
-  darkOff: [0.06, 0.26],
+  dark: [0.1, 0.72],
+  target: 0.16,
+  tint: 0.06,
   glow: 0.1,
   specular: 0.34,
   shine: 24,
@@ -134,7 +142,8 @@ function applyTuning(
   gl.uniform1f(u.tBlur!, t.blur);
   gl.uniform1f(u.tMerge!, t.merge);
   gl.uniform2f(u.tDark!, t.dark[0], t.dark[1]);
-  gl.uniform2f(u.tDarkOff!, t.darkOff[0], t.darkOff[1]);
+  gl.uniform1f(u.tTarget!, t.target);
+  gl.uniform1f(u.tTint!, t.tint);
   gl.uniform1f(u.tGlow!, t.glow);
   gl.uniform1f(u.tSpec!, t.specular);
   gl.uniform1f(u.tShine!, t.shine);
@@ -215,8 +224,9 @@ uniform float tDisp;     // channel spread as a fraction of the offset, was 0.03
 uniform vec2 tLod;       // frost, rim to centre, was (1.2, 5.0)
 uniform float tBlur;     // how far the frost gathers from, in device pixels
 uniform float tMerge;    // how far apart two panels still pull at each other
-uniform vec2 tDark;      // darkening, rim to centre, was (0.16, 0.54)
-uniform vec2 tDarkOff;   // the same, on the fallback path, was (0.06, 0.26)
+uniform vec2 tDark;      // floor and ceiling on the darkening
+uniform float tTarget;   // background luminance the body text needs to clear
+uniform float tTint;     // how far the glass shifts against what is behind it
 uniform float tGlow;     // accent rim glow, was 0.10
 uniform float tSpec;     // white rim specular, was 0.34
 uniform float tShine;    // specular tightness: bigger is a thinner band
@@ -470,18 +480,38 @@ void main() {
   // Nothing dims behind an open panel: the lift lives on the panel itself, so
   // darkening the rest of the screen would undo the point of it.
 
-  // Darkening ramps with depth: light at the rim, heavy through the middle.
+  // Darkening is solved, not set.
   //
-  // A flat 72% everywhere was why the refraction could not be seen — it crushed
-  // the bent wallpaper to near black exactly where the bending happens. Ramping
-  // it also puts the darkness where the text is, so legibility and the effect
-  // pull in the same direction instead of trading off.
-  // Ultra clear, iOS 27's "极清" end of the scale: the wallpaper reads straight
-  // through the panel and the depth comes entirely from the refraction. Only a
-  // gentle ramp toward the middle, where the text sits.
-  float darkness = hasUi > 0.5 ? mix(tDark.x, tDark.y, depth)
-                               : mix(tDarkOff.x, tDarkOff.y, depth);
-  col = mix(col, col * 0.30, darkness * glassAmount * fxA.w);
+  // It used to be two constants ramped by depth, and one pair of constants
+  // cannot serve both a black wallpaper and a white one: enough to hold 13px
+  // text over the white one turns the black one into a blackboard. That is why
+  // "both wallpapers have to pass" was the condition that kept failing — not a
+  // value that had not been found yet, but a value that does not exist.
+  //
+  // What the panel needs is a *background luminance*, and this pixel already
+  // knows its own: col is what it would read as if nothing were done to it,
+  // and the gather has already averaged it over the blur disc. So the answer is
+  // arithmetic. Darkening multiplies by (1 - 0.7d), so reaching tTarget from
+  // lum wants d = (1 - tTarget/lum) / 0.7.
+  //
+  // Per pixel, which is finer than the per-block sampling this was scoped as,
+  // and needs no smoothing over time — it is not a statistic that jitters
+  // between frames, it is the pixel.
+  float lum = dot(col, vec3(0.2126, 0.7152, 0.0722));
+  float needed = (1.0 - tTarget / max(lum, 0.001)) / 0.7;
+  // The floor keeps a panel over a black wallpaper still reading as a panel;
+  // the ceiling keeps a panel over a white one from going opaque. Between them
+  // the backdrop decides.
+  float darkness = clamp(needed, tDark.x, tDark.y);
+  // The rim stays clearer than the middle. Legibility is a problem where the
+  // text is, and the bevel is where the refraction is worth seeing.
+  col = mix(col, col * 0.30, darkness * mix(0.35, 1.0, depth) * glassAmount * fxA.w);
+
+  // And a shift against what is behind it. Warm backdrop, cooler glass, and the
+  // other way about: a panel that leans away from what it covers separates from
+  // it, one that matches it sinks in.
+  float warm = col.r - col.b;
+  col += vec3(-warm, 0.0, warm) * tTint * depth * glassAmount * fxA.w;
 
   // The signature of Liquid Glass is a thin, crisp specular line right at the
   // bevel — not a wide halo. Anything broad here reads as a second frame just
@@ -656,7 +686,7 @@ function makeLayer(zIndex: number, glassOnly: boolean, after: Element): Layer | 
   const names = [
     "res", "time", "accent", "wallpaper", "hasWallpaper", "wallAspect",
     "glassRect[0]", "glassRadius[0]", "glassCount", "glassAmount", "veil", "glassOnly", "ui", "hasUi",
-    "tIor", "tThick", "tRim", "tDisp", "tLod", "tBlur", "tMerge", "tDark", "tDarkOff", "tGlow", "tSpec",
+    "tIor", "tThick", "tRim", "tDisp", "tLod", "tBlur", "tMerge", "tDark", "tTarget", "tTint", "tGlow", "tSpec",
     "tShine", "tEnv", "tLight", "fxA", "fxB", "fxC",
   ];
   const u: Record<string, WebGLUniformLocation | null> = {};

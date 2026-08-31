@@ -209,8 +209,10 @@ const KNOBS: Knob[] = [
   { label: "磨砂 心", min: 0, max: 8, step: 0.1, get: () => tuning.lod[1], set: (v) => (tuning.lod[1] = v) },
   { label: "模糊半径", min: 0, max: 80, step: 1, get: () => tuning.blur, set: (v) => (tuning.blur = v) },
   { label: "融合距离", min: 0, max: 120, step: 1, get: () => tuning.merge, set: (v) => (tuning.merge = v) },
-  { label: "压暗 边", min: 0, max: 1, step: 0.01, get: () => tuning.dark[0], set: (v) => (tuning.dark[0] = v) },
-  { label: "压暗 心", min: 0, max: 1, step: 0.01, get: () => tuning.dark[1], set: (v) => (tuning.dark[1] = v) },
+  { label: "压暗 下限", min: 0, max: 1, step: 0.01, get: () => tuning.dark[0], set: (v) => (tuning.dark[0] = v) },
+  { label: "压暗 上限", min: 0, max: 1, step: 0.01, get: () => tuning.dark[1], set: (v) => (tuning.dark[1] = v) },
+  { label: "目标亮度", min: 0.02, max: 0.5, step: 0.005, get: () => tuning.target, set: (v) => (tuning.target = v) },
+  { label: "色调偏移", min: 0, max: 0.3, step: 0.01, get: () => tuning.tint, set: (v) => (tuning.tint = v) },
   { label: "accent 晕", min: 0, max: 0.6, step: 0.01, get: () => tuning.glow, set: (v) => (tuning.glow = v) },
   { label: "高光", min: 0, max: 1.5, step: 0.01, get: () => tuning.specular, set: (v) => (tuning.specular = v) },
   { label: "高光锐度", min: 1, max: 120, step: 1, get: () => tuning.shine, set: (v) => (tuning.shine = v) },
@@ -338,7 +340,8 @@ el("export").addEventListener("click", () => {
     `  lod: [${f(tuning.lod[0])}, ${f(tuning.lod[1])}],\n` +
     `  blur: ${f(tuning.blur)},\n` +
     `  dark: [${tuning.dark[0]}, ${tuning.dark[1]}],\n` +
-    `  darkOff: [${tuning.darkOff[0]}, ${tuning.darkOff[1]}],\n` +
+    `  target: ${tuning.target},\n` +
+    `  tint: ${tuning.tint},\n` +
     `  glow: ${tuning.glow},\n` +
     `  specular: ${tuning.specular},\n` +
     `  shine: ${f(tuning.shine)},\n` +
