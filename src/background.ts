@@ -830,11 +830,48 @@ export function startBackground(watchOcclusion: boolean): Scene | null {
   let amount = 0;
 
   // Capturing the interface is a full repaint into a texture, so it only runs
-  // while a panel is actually open, and at a limited rate — the result is read
-  // through a frosted lens, where a stale frame or two is invisible.
+  // while a panel is actually open.
+  //
+  // At full resolution now, not half. Half was chosen when the result was "only
+  // read through a frosted lens", and that stopped being true: the bevel is the
+  // clear part of the panel, and since #17 and #18 it carries a lens and a
+  // moving highlight. It is the one place detail matters most and it was being
+  // handed the softest source in the pipeline.
   const world = document.getElementById("world");
-  const capture: Capture | null = world ? createCapture(world, 0.5) : null;
-  const CAPTURE_INTERVAL = 1000 / 30;
+  const capture: Capture | null = world ? createCapture(world, 1) : null;
+
+  /**
+   * How often to capture. Two rates, because two different things move.
+   *
+   * A fixed 30fps repainted the entire interface thirty times a second whether
+   * or not a pixel of it had changed — which, with a search panel open and
+   * nobody typing, is all of them wasted.
+   *
+   * But "nothing changed" cannot be read off the DOM alone. `#world` contains
+   * the backdrop canvas, and the light bands drift across it continuously with
+   * no mutation to observe. So the floor is what the drift needs and the burst
+   * is what interaction needs.
+   */
+  const CAPTURE_BUSY = 1000 / 30;
+  const CAPTURE_IDLE = 1000 / 10;
+  /**
+   * A mutation means the interface changed, and usually also means a transition
+   * just started — a class landing on a tile is one frame of DOM change followed
+   * by 300ms of animation that mutates nothing. So a mutation buys a window of
+   * fast capture rather than a single frame of it.
+   */
+  let busyUntil = -1e9;
+  if (world && typeof MutationObserver === "function") {
+    const watcher = new MutationObserver(() => {
+      busyUntil = performance.now() + 400;
+    });
+    watcher.observe(world, {
+      subtree: true,
+      childList: true,
+      attributes: true,
+      characterData: true,
+    });
+  }
   let lastCapture = -1e9;
 
   /**
@@ -860,7 +897,7 @@ export function startBackground(watchOcclusion: boolean): Scene | null {
 
   function refreshUi(now: number): void {
     if (!capture) return;
-    if (now - lastCapture < CAPTURE_INTERVAL) return;
+    if (now - lastCapture < (now < busyUntil ? CAPTURE_BUSY : CAPTURE_IDLE)) return;
     lastCapture = now;
 
     const { gl, u } = glassLayer;
