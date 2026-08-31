@@ -688,6 +688,8 @@ type Settings = {
   model: string;
   baseUrl: string;
   autostart: boolean;
+  /** Whichever hotkey actually registered, or empty if none of them did. */
+  hotkey: string;
 };
 
 const effectStateEl = el("seteffectstate");
@@ -917,6 +919,9 @@ async function openSettings(): Promise<void> {
   modelEl.value = s.model;
   urlEl.value = s.baseUrl;
   autoEl.classList.toggle("on", s.autostart);
+  // Reported rather than hardcoded: printing a fixed string here is how the
+  // panel came to advertise a hotkey nothing had registered.
+  el("sethotkey").textContent = s.hotkey || "全部被占用，没能注册";
   paintEffectState();
   setMsgEl.textContent = "";
   // Opening a panel of ours is proof somebody is looking, so the scene must not

@@ -20,6 +20,12 @@ use tauri::{
 
 const DESKTOP: &str = "desktop";
 
+/// Which summon hotkey actually took, or None if none did.
+///
+/// The settings panel used to print a fixed string, which is how it came to
+/// advertise one that was never registered at all. It now prints this.
+struct SummonKey(Option<String>);
+
 #[tauri::command]
 fn list_targets() -> Vec<targets::LaunchTarget> {
     // Dropped-in targets sit outside the two scanned sources, so they have to be
@@ -197,16 +203,19 @@ struct Settings {
     model: String,
     base_url: String,
     autostart: bool,
+    /// Human-readable, or empty when nothing could be registered.
+    hotkey: String,
 }
 
 #[tauri::command]
-fn read_settings() -> Settings {
+fn read_settings(summon: State<SummonKey>) -> Settings {
     let cfg = config::load();
     Settings {
         has_key: secrets::has_key(),
         model: cfg.model,
         base_url: cfg.base_url,
         autostart: autostart::enabled(),
+        hotkey: summon.0.clone().unwrap_or_default(),
     }
 }
 
@@ -395,24 +404,24 @@ pub fn run() {
                 })
                 .build(app)?;
 
-            // The summon hotkey. The settings panel has claimed one since before
-            // anything registered it, and the value it claimed — Alt+Space — is
-            // Windows' own window menu, so it could never have worked.
+            // The summon hotkey.
             //
-            // Ctrl+Alt+Space instead, chosen around the input method rather than
-            // around what is free: Ctrl+Space toggles the IME on a Chinese
-            // Windows and Alt+Shift cycles keyboard layouts. Typing Chinese into
-            // the search box is the core interaction here (ADR 0016), so a hotkey
-            // that fights the IME would break the thing it exists to open.
+            // Tried in order rather than fixed, because a fixed one is a bet on
+            // somebody else's machine and that bet has now lost twice: Alt+Space
+            // is Windows' own window menu, and Ctrl+Alt+Space was already taken
+            // here — Chinese IMEs commonly hold it.
+            //
+            // Space is out of the list entirely at the author's request. So are
+            // Ctrl+Space and Alt+Shift, which toggle the IME and cycle keyboard
+            // layouts on a Chinese Windows: the search box is the one place in
+            // deskmind that has to accept Chinese (ADR 0016 turned down a canvas
+            // UI over exactly that), so a hotkey there would fight what it opens.
+            // Letter keys only, since punctuation moves with the layout.
             {
                 use tauri_plugin_global_shortcut::{
                     Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState,
                 };
 
-                let summon = Shortcut::new(
-                    Some(Modifiers::CONTROL | Modifiers::ALT),
-                    Code::Space,
-                );
                 app.handle().plugin(
                     tauri_plugin_global_shortcut::Builder::new()
                         .with_handler(move |app, _shortcut, event| {
@@ -435,13 +444,34 @@ pub fn run() {
                         .build(),
                 )?;
 
-                // Registered separately, and a failure here is reported rather
-                // than propagated. A hotkey another program already owns is a
-                // hotkey that does not work; it is not a reason for the desktop
-                // to refuse to start, and `?` here would have made it one.
-                if let Err(err) = app.global_shortcut().register(summon) {
-                    eprintln!("唤出热键 Ctrl+Alt+Space 注册失败，可能被其它程序占用：{err}");
+                let ctrl_alt = Modifiers::CONTROL | Modifiers::ALT;
+                let ctrl_shift = Modifiers::CONTROL | Modifiers::SHIFT;
+                let candidates = [
+                    (ctrl_alt, Code::KeyD, "Ctrl + Alt + D"),
+                    (ctrl_alt, Code::KeyK, "Ctrl + Alt + K"),
+                    (ctrl_shift, Code::KeyD, "Ctrl + Shift + D"),
+                    (ctrl_alt, Code::KeyJ, "Ctrl + Alt + J"),
+                ];
+
+                // Whichever takes. A hotkey somebody else owns is a hotkey that
+                // does not work; it is not a reason for the desktop to refuse to
+                // start, so nothing here propagates.
+                let mut chosen = None;
+                for (mods, code, label) in candidates {
+                    if app
+                        .global_shortcut()
+                        .register(Shortcut::new(Some(mods), code))
+                        .is_ok()
+                    {
+                        chosen = Some(label.to_string());
+                        break;
+                    }
                 }
+                match &chosen {
+                    Some(label) => println!("唤出热键：{label}"),
+                    None => eprintln!("唤出热键全部注册失败，四个候选都被占用了"),
+                }
+                app.manage(SummonKey(chosen));
             }
 
             // Settle *after* showing. Tauri writes the extended style itself while
