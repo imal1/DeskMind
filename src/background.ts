@@ -761,19 +761,33 @@ export function startBackground(watchOcclusion: boolean): Scene | null {
     for (const layer of layers) {
       const { canvas, gl, u } = layer;
       const isGlass = layer === glassLayer;
-      // Fog alone is soft enough for half resolution; refraction is not — it
-      // bends a photograph and the seams show.
-      // The glass layer runs at device pixels: it draws hairlines and rounded
-      // corners, and rendering those in CSS pixels then letting the browser
-      // upscale is its own source of stepped edges. Capped at 2 so a 4K ultrawide
-      // does not quadruple the fragment count for nothing.
+      // The backdrop stays at half resolution whether or not a panel is open.
+      //
+      // It used to jump to full the moment glass appeared, on the grounds that
+      // refraction bends a photograph and the seams show. The seams do show — but
+      // not from here. The shader's `behind()` samples the captured interface
+      // when there is one and computes `scene()` analytically when there is not,
+      // and the capture that feeds the first is itself half resolution. Rendering
+      // the backdrop at full only to have `drawElementImage` halve it again buys
+      // the refraction nothing; it was four times the pixels for detail thrown
+      // away one step later.
+      //
+      // What it did buy was the directly visible wallpaper, and that argument ran
+      // backwards: the wallpaper was sharper while a panel covered part of it
+      // than while nothing did, so opening search popped the whole screen into
+      // focus. Now it looks the same either way.
+      //
+      // The glass layer still runs at device pixels: it draws hairlines and
+      // rounded corners, and rendering those in CSS pixels then letting the
+      // browser upscale is its own source of stepped edges. Capped at 2 so a 4K
+      // ultrawide does not quadruple the fragment count for nothing.
       const dpr = Math.min(window.devicePixelRatio || 1, 2);
       // With no panel up the glass layer has nothing to draw but transparency,
       // and drawing that at device pixels was a full 3440x1440 pass per frame for
       // an image nobody can see. Collapsing the canvas to a pixel is what makes
       // it free: the resize clears it, and one stretched transparent pixel looks
       // exactly like the fullscreen transparent one it replaces.
-      const scale = isGlass ? (showingGlass ? dpr : 0) : showingGlass ? 1 : 0.5;
+      const scale = isGlass ? (showingGlass ? dpr : 0) : 0.5;
       const w = Math.max(1, Math.round(canvas.clientWidth * scale));
       const h = Math.max(1, Math.round(canvas.clientHeight * scale));
       if (canvas.width !== w || canvas.height !== h) {
