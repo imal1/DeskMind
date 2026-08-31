@@ -65,6 +65,8 @@ export type Tuning = {
   lod: [number, number];
   /** How far the frost gathers from at the centre, in device pixels. */
   blur: number;
+  /** How close two panels have to be before they pull at each other, in pixels. */
+  merge: number;
   /** Darkening, rim to centre. */
   dark: [number, number];
   /** Darkening on the fallback path, where only the wallpaper is refracted. */
@@ -98,6 +100,7 @@ export const DEFAULT_TUNING: Tuning = {
   dispersion: 0.03,
   lod: [1.2, 3.0],
   blur: 22,
+  merge: 28,
   dark: [0.16, 0.54],
   darkOff: [0.06, 0.26],
   glow: 0.1,
@@ -129,6 +132,7 @@ function applyTuning(
   gl.uniform1f(u.tDisp!, t.dispersion);
   gl.uniform2f(u.tLod!, t.lod[0], t.lod[1]);
   gl.uniform1f(u.tBlur!, t.blur);
+  gl.uniform1f(u.tMerge!, t.merge);
   gl.uniform2f(u.tDark!, t.dark[0], t.dark[1]);
   gl.uniform2f(u.tDarkOff!, t.darkOff[0], t.darkOff[1]);
   gl.uniform1f(u.tGlow!, t.glow);
@@ -179,6 +183,7 @@ uniform float tRim;      // width of the bevel, in device pixels
 uniform float tDisp;     // channel spread as a fraction of the offset, was 0.03
 uniform vec2 tLod;       // frost, rim to centre, was (1.2, 5.0)
 uniform float tBlur;     // how far the frost gathers from, in device pixels
+uniform float tMerge;    // how far apart two panels still pull at each other
 uniform vec2 tDark;      // darkening, rim to centre, was (0.16, 0.54)
 uniform vec2 tDarkOff;   // the same, on the fallback path, was (0.06, 0.26)
 uniform float tGlow;     // accent rim glow, was 0.10
@@ -294,6 +299,33 @@ vec2 lens(vec3 N, float ior) {
   return R.xy * (tThick / -R.z);
 }
 
+/// Smooth minimum. Two surfaces closer together than k grow a neck between them
+/// and then fuse; further apart than k this is exactly min(), so distant panels
+/// do not know about each other. The falloff is the whole behaviour — nothing
+/// has to measure the gap and decide, it comes out of the arithmetic.
+float smin(float a, float b, float k) {
+  if (k <= 0.0001) return min(a, b);
+  float h = clamp(0.5 + 0.5 * (b - a) / k, 0.0, 1.0);
+  return mix(b, a, h) - k * h * (1.0 - h);
+}
+
+/// The whole glass field, as one surface rather than a list of rectangles.
+///
+/// This replaces picking the nearest rectangle and then working from its centre
+/// and half-size. That could never merge: two panels touching would still be
+/// two separate bevels meeting at a seam, because everything downstream was
+/// derived from whichever single rectangle won. A field has no seam to have.
+float fieldAt(vec2 p) {
+  float d = 1e9;
+  for (int i = 0; i < MAX_GLASS; i++) {
+    if (i >= glassCount) break;
+    vec2 c = glassRect[i].xy + glassRect[i].zw * 0.5;
+    vec2 h = glassRect[i].zw * 0.5;
+    d = smin(d, sdRoundBox(p - c, h, glassRadius[i]), tMerge);
+  }
+  return d;
+}
+
 const int TAPS = 8;
 
 /// Gathers the backdrop over a disc rather than taking one mip fetch.
@@ -332,20 +364,7 @@ void main() {
     return;
   }
 
-  // Nearest surface wins. Panels do not overlap in practice, and when a menu sits
-  // on a panel the one whose edge is closer is the one whose bevel should bend
-  // the light.
-  vec2 center = vec2(0.0);
-  vec2 half_size = vec2(0.0);
-  float radius = 0.0;
-  float d = 1e9;
-  for (int i = 0; i < MAX_GLASS; i++) {
-    if (i >= glassCount) break;
-    vec2 c = glassRect[i].xy + glassRect[i].zw * 0.5;
-    vec2 h = glassRect[i].zw * 0.5;
-    float di = sdRoundBox(frag - c, h, glassRadius[i]);
-    if (di < d) { d = di; center = c; half_size = h; radius = glassRadius[i]; }
-  }
+  float d = fieldAt(frag);
 
   if (glassCount == 0) {
     outColor = vec4(0.0);
@@ -373,11 +392,13 @@ void main() {
   // spreading it wide reads as a water film.
   float depth = smoothstep(0.0, -max(tRim, 1.0), d);
 
-  // Which way is out, from the gradient of the distance field.
+  // Which way is out, from the gradient of the merged field rather than of one
+  // rectangle. Where two panels have fused, this points along the joined surface
+  // — including through the neck between them, which belongs to neither.
   vec2 e = vec2(1.0, 0.0);
   vec2 n = normalize(vec2(
-    sdRoundBox(frag - center + e.xy, half_size, radius) - sdRoundBox(frag - center - e.xy, half_size, radius),
-    sdRoundBox(frag - center + e.yx, half_size, radius) - sdRoundBox(frag - center - e.yx, half_size, radius)
+    fieldAt(frag + e.xy) - fieldAt(frag - e.xy),
+    fieldAt(frag + e.yx) - fieldAt(frag - e.yx)
   ) + 1e-6);
 
   // The bevel, as a quarter-round: u is 1 at the very edge and 0 where the slab
@@ -604,7 +625,7 @@ function makeLayer(zIndex: number, glassOnly: boolean, after: Element): Layer | 
   const names = [
     "res", "time", "accent", "wallpaper", "hasWallpaper", "wallAspect",
     "glassRect[0]", "glassRadius[0]", "glassCount", "glassAmount", "veil", "glassOnly", "ui", "hasUi",
-    "tIor", "tThick", "tRim", "tDisp", "tLod", "tBlur", "tDark", "tDarkOff", "tGlow", "tSpec",
+    "tIor", "tThick", "tRim", "tDisp", "tLod", "tBlur", "tMerge", "tDark", "tDarkOff", "tGlow", "tSpec",
     "tShine", "tEnv", "tLight", "fxA", "fxB", "fxC",
   ];
   const u: Record<string, WebGLUniformLocation | null> = {};

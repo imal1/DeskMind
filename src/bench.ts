@@ -18,6 +18,8 @@ const el = <T extends HTMLElement>(id: string): T => document.getElementById(id)
 
 const wallEl = el("wall");
 const panelEl = el("panel");
+const panel2El = el("panel2");
+const panels = [panelEl, panel2El];
 const stageEl = el("stage");
 const refEl = el("ref");
 const splitEl = el("split");
@@ -129,44 +131,48 @@ function useBackdrop(url: string, mean: number | null): void {
 
 /** Keeps the shader's rectangle on the DOM panel, which is the whole contract. */
 function syncGlass(): void {
-  const b = panelEl.getBoundingClientRect();
   const s = stageEl.getBoundingClientRect();
-  scene!.setGlass([
-    {
-      x: b.left - s.left,
-      y: b.top - s.top,
-      width: b.width,
-      height: b.height,
-      radius: parseFloat(getComputedStyle(panelEl).borderTopLeftRadius) || 24,
-    },
-  ]);
+  scene!.setGlass(
+    panels.map((p) => {
+      const b = p.getBoundingClientRect();
+      return {
+        x: b.left - s.left,
+        y: b.top - s.top,
+        width: b.width,
+        height: b.height,
+        radius: parseFloat(getComputedStyle(p).borderTopLeftRadius) || 24,
+      };
+    }),
+  );
 }
 
-function placePanel(x: number, y: number): void {
-  panelEl.style.left = `${x}px`;
-  panelEl.style.top = `${y}px`;
+function placePanel(node: HTMLElement, x: number, y: number): void {
+  node.style.left = `${x}px`;
+  node.style.top = `${y}px`;
   syncGlass();
 }
 
 // Dragging is not decoration: #20's condition is that the darkening stays smooth
 // as a panel crosses a light-to-dark boundary, and that can only be judged by
 // moving one across it.
-let drag: { dx: number; dy: number } | null = null;
-panelEl.addEventListener("pointerdown", (e) => {
-  const b = panelEl.getBoundingClientRect();
-  drag = { dx: e.clientX - b.left, dy: e.clientY - b.top };
-  panelEl.classList.add("dragging");
-  panelEl.setPointerCapture(e.pointerId);
-});
-panelEl.addEventListener("pointermove", (e) => {
-  if (!drag) return;
-  const s = stageEl.getBoundingClientRect();
-  placePanel(e.clientX - s.left - drag.dx, e.clientY - s.top - drag.dy);
-});
-panelEl.addEventListener("pointerup", () => {
-  drag = null;
-  panelEl.classList.remove("dragging");
-});
+let drag: { node: HTMLElement; dx: number; dy: number } | null = null;
+for (const node of panels) {
+  node.addEventListener("pointerdown", (e) => {
+    const b = node.getBoundingClientRect();
+    drag = { node, dx: e.clientX - b.left, dy: e.clientY - b.top };
+    node.classList.add("dragging");
+    node.setPointerCapture(e.pointerId);
+  });
+  node.addEventListener("pointermove", (e) => {
+    if (!drag || drag.node !== node) return;
+    const s = stageEl.getBoundingClientRect();
+    placePanel(node, e.clientX - s.left - drag.dx, e.clientY - s.top - drag.dy);
+  });
+  node.addEventListener("pointerup", () => {
+    drag = null;
+    node.classList.remove("dragging");
+  });
+}
 
 // ---------- controls ----------
 
@@ -199,6 +205,7 @@ const KNOBS: Knob[] = [
   { label: "磨砂 边", min: 0, max: 8, step: 0.1, get: () => tuning.lod[0], set: (v) => (tuning.lod[0] = v) },
   { label: "磨砂 心", min: 0, max: 8, step: 0.1, get: () => tuning.lod[1], set: (v) => (tuning.lod[1] = v) },
   { label: "模糊半径", min: 0, max: 80, step: 1, get: () => tuning.blur, set: (v) => (tuning.blur = v) },
+  { label: "融合距离", min: 0, max: 120, step: 1, get: () => tuning.merge, set: (v) => (tuning.merge = v) },
   { label: "压暗 边", min: 0, max: 1, step: 0.01, get: () => tuning.dark[0], set: (v) => (tuning.dark[0] = v) },
   { label: "压暗 心", min: 0, max: 1, step: 0.01, get: () => tuning.dark[1], set: (v) => (tuning.dark[1] = v) },
   { label: "accent 晕", min: 0, max: 0.6, step: 0.01, get: () => tuning.glow, set: (v) => (tuning.glow = v) },
@@ -366,7 +373,9 @@ buildToggles();
 buildKnobs();
 useBackdrop(backdrops.dark.url, backdrops.dark.mean);
 panelEl.style.width = "520px";
-placePanel(280, 220);
+panel2El.style.width = "180px";
+placePanel(panelEl, 280, 200);
+placePanel(panel2El, 320, 430);
 setSplit(window.innerWidth * 0.62);
 push();
 

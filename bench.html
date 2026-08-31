@@ -51,14 +51,17 @@
   #world { position: absolute; inset: 0; }
   #wall { position: absolute; inset: 0; background-size: cover; background-position: center; z-index: 0; }
   #scrim { position: absolute; inset: 0; z-index: 20; }
-  #panel {
+  .gpanel {
     position: absolute; z-index: 21; box-sizing: border-box;
     border-radius: 24px; padding: 22px 26px; cursor: grab;
     display: flex; flex-direction: column; gap: 10px;
   }
-  #panel.dragging { cursor: grabbing; }
-  #panel .big { font-size: 17px; font-weight: 300; }
-  #panel .small { font-size: 13px; color: rgba(255,255,255,.62); line-height: 1.7; }
+  .gpanel.dragging { cursor: grabbing; }
+  .gpanel .big { font-size: 17px; font-weight: 300; }
+  .gpanel .small { font-size: 13px; color: rgba(255,255,255,.62); line-height: 1.7; }
+  /* The second one is what makes merging visible at all: one shape has nothing
+     to fuse with. Drag them together to watch the neck form. */
+  #panel2 { border-radius: 16px; padding: 14px 16px; }
   /* 13px body text is what the contrast condition in #4's standard is written
      against, so the sample on the panel is 13px and nothing else. */
 
@@ -123,12 +126,15 @@
       <div id="wall"></div>
     </div>
     <div id="scrim"></div>
-    <div id="panel">
+    <div id="panel" class="gpanel">
       <div class="big">搜索启动项</div>
       <div class="small">
         13px 正文。#4 的可读性那条就是拿这一号字对比度算的：<br />
         亮壁纸下与正后方背景的对比度要 ≥ 4.5:1。
       </div>
+    </div>
+    <div id="panel2" class="gpanel">
+      <div class="small">右键菜单<br />拖到另一块旁边看融合</div>
     </div>
     <div id="refwrap"><div id="ref"></div></div>
     <div id="split"></div>
