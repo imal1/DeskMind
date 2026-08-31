@@ -682,6 +682,18 @@ export function startBackground(watchOcclusion: boolean): Scene | null {
    * 30, 1.8% here — which is the first number inside ADR 0016's 1-2%.
    */
   const IDLE_FRAME = 1000 / 15;
+  /**
+   * What a panel that has finished arriving costs. Measured with one open and
+   * settled, the scene was taking 38% of the GPU: there was no budget at all in
+   * this state, so it ran at whatever the monitor asked for — forever, for a
+   * rectangle that is not moving.
+   *
+   * Nothing in it needs that. The bands drift at 0.25 radians a second, which
+   * ADR 0016 already records 15fps as over-serving, and the panel itself is
+   * still. Full rate is kept only while the glass is fading in, where the frames
+   * are actually different from each other.
+   */
+  const OPEN_FRAME = 1000 / 30;
   let lastFrame = -1e9;
 
   function refreshUi(now: number): void {
@@ -728,7 +740,11 @@ export function startBackground(watchOcclusion: boolean): Scene | null {
     // slack because rAF lands a hair early as often as late — without it every
     // other slot is missed and the budget halves itself.
     const idle = target.length === 0 && amount < 0.01;
-    if (idle && now - lastFrame < IDLE_FRAME - 1) return;
+    // Full rate only while the glass is on its way in or out; once it has
+    // settled there is a budget again.
+    const settling = amount > 0.001 && amount < 0.999;
+    const budget = idle ? IDLE_FRAME : settling ? 0 : OPEN_FRAME;
+    if (budget > 0 && now - lastFrame < budget - 1) return;
     lastFrame = now;
 
     const want = target.length > 0 ? 1 : 0;
@@ -775,6 +791,7 @@ export function startBackground(watchOcclusion: boolean): Scene | null {
         gl.activeTexture(gl.TEXTURE0);
         gl.bindTexture(gl.TEXTURE_2D, layer.texture);
       }
+      let rectsForScissor: number[] = [];
       if (target.length > 0) {
         // CSS pixels count y from the top; gl_FragCoord counts from the bottom.
         const rects: number[] = [];
@@ -791,6 +808,7 @@ export function startBackground(watchOcclusion: boolean): Scene | null {
         gl.uniform4fv(u["glassRect[0]"]!, rects);
         gl.uniform1fv(u["glassRadius[0]"]!, radii);
         gl.uniform1i(u.glassCount!, radii.length);
+        rectsForScissor = rects;
       }
       gl.uniform1f(u.glassAmount!, amount);
       // y flips: the shader works in gl_FragCoord, which counts up from the
@@ -805,7 +823,38 @@ export function startBackground(watchOcclusion: boolean): Scene | null {
       gl.uniform1f(u.time!, now / 1000);
       gl.clearColor(0, 0, 0, 0);
       gl.clear(gl.COLOR_BUFFER_BIT);
-      gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+      // The glass is drawn only where there is glass. It used to shade the whole
+      // screen at device pixels — nearly 20 million fragments on an ultrawide at
+      // dpr 2 — for panels covering a couple of percent of it, and every fragment
+      // outside them still walked the whole rectangle list to find out it had
+      // nothing to draw.
+      //
+      // One scissored pass per panel. Overlapping boxes get shaded twice, which
+      // costs a little and changes nothing: the shader picks the nearest surface
+      // out of the same list either way, so both passes write the same pixel.
+      if (isGlass && showingGlass && target.length > 0) {
+        gl.enable(gl.SCISSOR_TEST);
+        for (let i = 0; i < rectsForScissor.length; i += 4) {
+          // Padding covers the shadow, which reaches 30px past the edge and is
+          // drawn by the same pass.
+          const pad = 34;
+          const x = Math.floor(rectsForScissor[i]! - pad);
+          const y = Math.floor(rectsForScissor[i + 1]! - pad);
+          const bw = Math.ceil(rectsForScissor[i + 2]! + pad * 2);
+          const bh = Math.ceil(rectsForScissor[i + 3]! + pad * 2);
+          gl.scissor(
+            Math.max(0, x),
+            Math.max(0, y),
+            Math.min(w - Math.max(0, x), bw),
+            Math.min(h - Math.max(0, y), bh),
+          );
+          gl.drawArrays(gl.TRIANGLES, 0, 3);
+        }
+        gl.disable(gl.SCISSOR_TEST);
+      } else {
+        gl.drawArrays(gl.TRIANGLES, 0, 3);
+      }
     }
   }
 
