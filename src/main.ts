@@ -1307,6 +1307,13 @@ window.addEventListener("resize", () => {
 gridEl.addEventListener("pointermove", (e) => leanAt(e.clientX, e.clientY));
 gridEl.addEventListener("pointerleave", () => setTilt(null));
 
+// The glass lights from wherever the pointer is. Cheap — it stores two numbers
+// that the running loop reads — and deliberately not a reason to start drawing:
+// a pointer crossing a covered desktop still draws nothing.
+window.addEventListener("pointermove", (e) => {
+  background?.setLight({ x: e.clientX, y: e.clientY });
+});
+
 queryEl.addEventListener("input", () => {
   pick = 0;
   paintResults();

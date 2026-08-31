@@ -176,6 +176,7 @@ const TERMS: { key: keyof Tuning["on"]; label: string }[] = [
   { key: "frost", label: "磨砂" },
   { key: "darken", label: "压暗" },
   { key: "specular", label: "边缘高光" },
+  { key: "env", label: "环境反射" },
   { key: "glow", label: "accent 晕" },
   { key: "border", label: "发丝边框" },
   { key: "shadow", label: "投影" },
@@ -201,6 +202,8 @@ const KNOBS: Knob[] = [
   { label: "压暗 心", min: 0, max: 1, step: 0.01, get: () => tuning.dark[1], set: (v) => (tuning.dark[1] = v) },
   { label: "accent 晕", min: 0, max: 0.6, step: 0.01, get: () => tuning.glow, set: (v) => (tuning.glow = v) },
   { label: "高光", min: 0, max: 1.5, step: 0.01, get: () => tuning.specular, set: (v) => (tuning.specular = v) },
+  { label: "高光锐度", min: 1, max: 120, step: 1, get: () => tuning.shine, set: (v) => (tuning.shine = v) },
+  { label: "环境反射", min: 0, max: 0.6, step: 0.01, get: () => tuning.env, set: (v) => (tuning.env = v) },
 ];
 
 function push(): void {
@@ -326,6 +329,8 @@ el("export").addEventListener("click", () => {
     `  darkOff: [${tuning.darkOff[0]}, ${tuning.darkOff[1]}],\n` +
     `  glow: ${tuning.glow},\n` +
     `  specular: ${tuning.specular},\n` +
+    `  shine: ${f(tuning.shine)},\n` +
+    `  env: ${tuning.env},\n` +
     `  on: { ${TERMS.map(({ key }) => `${key}: ${tuning.on[key]}`).join(", ")} },\n` +
     `};`;
 });
@@ -335,6 +340,22 @@ el("reset").addEventListener("click", () => {
   buildToggles();
   buildKnobs();
   push();
+});
+
+// The light follows the pointer here, which is the quickest way to see whether
+// the band actually slides along the edge — this ticket's whole condition.
+// Holding shift parks it, for judging a still frame.
+let lightLocked = false;
+stageEl.addEventListener("pointermove", (e) => {
+  if (lightLocked || drag) return;
+  const s = stageEl.getBoundingClientRect();
+  scene!.setLight({ x: e.clientX - s.left, y: e.clientY - s.top });
+});
+window.addEventListener("keydown", (e) => {
+  if (e.key === "Shift") lightLocked = true;
+});
+window.addEventListener("keyup", (e) => {
+  if (e.key === "Shift") lightLocked = false;
 });
 
 window.addEventListener("resize", syncGlass);

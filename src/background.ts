@@ -71,6 +71,10 @@ export type Tuning = {
   glow: number;
   /** White specular at the rim. */
   specular: number;
+  /** Specular tightness. Bigger is a thinner band. */
+  shine: number;
+  /** How much of the surroundings the bevel reflects. */
+  env: number;
   /** Per-term switches: on keeps the term, off removes it. */
   on: {
     refract: boolean;
@@ -78,6 +82,7 @@ export type Tuning = {
     frost: boolean;
     darken: boolean;
     specular: boolean;
+    env: boolean;
     glow: boolean;
     border: boolean;
     shadow: boolean;
@@ -94,12 +99,15 @@ export const DEFAULT_TUNING: Tuning = {
   darkOff: [0.06, 0.26],
   glow: 0.1,
   specular: 0.34,
+  shine: 24,
+  env: 0.12,
   on: {
     refract: true,
     dispersion: true,
     frost: true,
     darken: true,
     specular: true,
+    env: true,
     glow: true,
     border: true,
     shadow: true,
@@ -121,8 +129,11 @@ function applyTuning(
   gl.uniform2f(u.tDarkOff!, t.darkOff[0], t.darkOff[1]);
   gl.uniform1f(u.tGlow!, t.glow);
   gl.uniform1f(u.tSpec!, t.specular);
+  gl.uniform1f(u.tShine!, t.shine);
+  gl.uniform1f(u.tEnv!, t.env);
   gl.uniform4f(u.fxA!, bit(t.on.refract), bit(t.on.dispersion), bit(t.on.frost), bit(t.on.darken));
   gl.uniform4f(u.fxB!, bit(t.on.specular), bit(t.on.glow), bit(t.on.border), bit(t.on.shadow));
+  gl.uniform4f(u.fxC!, bit(t.on.env), 0, 0, 0);
 }
 
 export type GlassRect = {
@@ -167,11 +178,16 @@ uniform vec2 tDark;      // darkening, rim to centre, was (0.16, 0.54)
 uniform vec2 tDarkOff;   // the same, on the fallback path, was (0.06, 0.26)
 uniform float tGlow;     // accent rim glow, was 0.10
 uniform float tSpec;     // white rim specular, was 0.34
+uniform float tShine;    // specular tightness: bigger is a thinner band
+uniform float tEnv;      // how much of the surroundings the bevel reflects
+uniform vec3 tLight;     // point light: xy on screen in device pixels, z above it
 // Per-term switches, so a failed acceptance can name a term instead of a
 // feeling: refract, dispersion, frost, darken.
 uniform vec4 fxA;
 // specular, accent glow, border, shadow.
 uniform vec4 fxB;
+// environment reflection, and three spare.
+uniform vec4 fxC;
 uniform sampler2D ui;    // the live interface, captured through HTML-in-Canvas
 uniform float hasUi;     // 0 when the capture is unavailable
 
@@ -380,7 +396,29 @@ void main() {
   // bevel — not a wide halo. Anything broad here reads as a second frame just
   // outside the DOM's 1px border.
   col += accent * pow(1.0 - depth, 3.0) * tGlow * glassAmount * fxB.y;
-  col += vec3(1.0) * pow(1.0 - depth, 14.0) * tSpec * glassAmount * fxB.x;
+
+  // A point light in screen space, not a direction. Under a directional light
+  // the band sits in the same place on the panel wherever the panel is, and a
+  // highlight that never moves is the thing that stops it reading as an object.
+  // With a point, walking the panel across the screen — or walking the light,
+  // which is how the pointer drives it — slides the band along the edge.
+  vec3 L = normalize(vec3(tLight.xy - frag, max(tLight.z, 1.0)));
+  vec3 V = vec3(0.0, 0.0, 1.0);
+  float spec = pow(max(dot(N, normalize(L + V)), 0.0), max(tShine, 1.0));
+
+  // Only on the bevel. The flat interior faces straight up, so without this the
+  // whole panel would catch the same even sheen and the edge would stop being
+  // the thing that catches light.
+  spec *= 1.0 - depth;
+  col += vec3(1.0) * spec * tSpec * glassAmount * fxB.x;
+
+  // The surroundings, reflected. There is no environment map to sample, but
+  // there is the backdrop, and a bevel steep enough to point somewhere other
+  // than back at the viewer will show it. Blurred, because a sharp reflection of
+  // the wallpaper on a 30px band reads as a bug.
+  vec3 Rf = reflect(-V, N);
+  vec3 env = behind((frag + Rf.xy * tThick * 2.0) / res, mix(2.0, 5.0, depth));
+  col += env * tEnv * (1.0 - depth) * glassAmount * fxC.x;
 
   // The hairline border, from the same distance field. Drawn here rather than in
   // CSS so it lands exactly on the glass edge — two systems each drawing their
@@ -527,7 +565,8 @@ function makeLayer(zIndex: number, glassOnly: boolean, after: Element): Layer | 
   const names = [
     "res", "time", "accent", "wallpaper", "hasWallpaper", "wallAspect",
     "glassRect[0]", "glassRadius[0]", "glassCount", "glassAmount", "veil", "glassOnly", "ui", "hasUi",
-    "tIor", "tThick", "tRim", "tDisp", "tLod", "tDark", "tDarkOff", "tGlow", "tSpec", "fxA", "fxB",
+    "tIor", "tThick", "tRim", "tDisp", "tLod", "tDark", "tDarkOff", "tGlow", "tSpec",
+    "tShine", "tEnv", "tLight", "fxA", "fxB", "fxC",
   ];
   const u: Record<string, WebGLUniformLocation | null> = {};
   for (const n of names) u[n] = gl.getUniformLocation(program, n);
@@ -572,6 +611,13 @@ export type Scene = {
   /** Pass an empty list to dissolve the glass. CSS pixels, y from the top. */
   setGlass(rects: GlassRect[]): void;
   setVeil(brightness: number): void;
+  /**
+   * Moves the light, in CSS pixels with y from the top. Null puts it back up and
+   * to the left. Deliberately does not wake the scene: it is state the running
+   * loop reads, and a pointer crossing the desktop is not on its own a reason to
+   * start drawing again.
+   */
+  setLight(at: { x: number; y: number } | null): void;
   /** #15's bench only. Production never calls this, so the defaults stand. */
   setTuning(t: Tuning): void;
   /** Any interaction with our own interface proves somebody is looking. */
@@ -612,6 +658,12 @@ export function startBackground(watchOcclusion: boolean): Scene | null {
 
   let hidden = false;
   let running = false;
+  /**
+   * Where the light sits, in CSS pixels with y from the top, or null for the
+   * standing default up and to the left — the direction interfaces have lit
+   * things from since before any of this was on a screen.
+   */
+  let light: { x: number; y: number } | null = null;
   let target: GlassRect[] = [];
   let amount = 0;
 
@@ -741,6 +793,14 @@ export function startBackground(watchOcclusion: boolean): Scene | null {
         gl.uniform1i(u.glassCount!, radii.length);
       }
       gl.uniform1f(u.glassAmount!, amount);
+      // y flips: the shader works in gl_FragCoord, which counts up from the
+      // bottom, and every rectangle handed in here counts down from the top.
+      gl.uniform3f(
+        u.tLight!,
+        (light ? light.x : canvas.clientWidth * 0.25) * scale,
+        (canvas.clientHeight - (light ? light.y : canvas.clientHeight * 0.15)) * scale,
+        Math.max(w, h) * 0.75,
+      );
       gl.uniform2f(u.res!, w, h);
       gl.uniform1f(u.time!, now / 1000);
       gl.clearColor(0, 0, 0, 0);
@@ -820,6 +880,9 @@ export function startBackground(watchOcclusion: boolean): Scene | null {
       };
       img.onerror = () => console.error("壁纸纹理加载失败", url);
       img.src = url;
+    },
+    setLight(at: { x: number; y: number } | null): void {
+      light = at;
     },
     setTuning(t: Tuning): void {
       forEach((l) => {
