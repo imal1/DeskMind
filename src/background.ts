@@ -790,9 +790,8 @@ export function startBackground(watchOcclusion: boolean): Scene | null {
    * handed in each frame.
    *
    * This is what lets a panel deform rather than fade: `life` carries it out of
-   * `seed` — the thing that was clicked — and into `goal`, and back again when it
-   * leaves. `goal` itself chases the DOM rectangle at a lag, so a panel that
-   * moves is followed rather than teleported to.
+   * `seed` — the thing that was clicked — and into `box`, and back again when it
+   * leaves.
    *
    * It also retires the rule that a glass panel may not move on entry. That rule
    * existed because the rectangle was measured once, in CSS pixels, and could not
@@ -801,8 +800,7 @@ export function startBackground(watchOcclusion: boolean): Scene | null {
   type Live = {
     key: string;
     seed: Box;
-    want: Box;
-    goal: Box;
+    box: Box;
     life: number;
     leaving: boolean;
   };
@@ -811,19 +809,20 @@ export function startBackground(watchOcclusion: boolean): Scene | null {
 
   /** Where each panel is this frame, after presence and lag are applied. */
   function shapes(): Box[] {
-    return live.map((l) => mixBox(l.seed, l.goal, l.life * l.life * (3 - 2 * l.life)));
+    return live.map((l) => mixBox(l.seed, l.box, l.life * l.life * (3 - 2 * l.life)));
   }
 
   function advance(now: number): void {
     const dt = lastNow < 0 ? 16 : Math.min(64, now - lastNow);
     lastNow = now;
-    // Presence over ~220ms; the chase is exponential, so it is framerate
-    // independent rather than a fixed fraction per frame.
+    // Presence over ~220ms. The rectangle itself is not smoothed: it used to
+    // chase the DOM over about 240ms, which was #21's damped follow. That had no
+    // scenario in the product — no panel here is dragged — and it had a price:
+    // the search panel grows as results arrive, and the glass trailed a quarter
+    // of a second behind its own panel. A lag with nothing to buy.
     const step = dt / 220;
-    const chase = 1 - Math.pow(0.002, dt / 240);
     for (const l of live) {
       l.life = Math.min(1, Math.max(0, l.life + (l.leaving ? -step : step)));
-      l.goal = mixBox(l.goal, l.want, chase);
     }
     live = live.filter((l) => !(l.leaving && l.life <= 0));
   }
@@ -832,13 +831,14 @@ export function startBackground(watchOcclusion: boolean): Scene | null {
   // Capturing the interface is a full repaint into a texture, so it only runs
   // while a panel is actually open.
   //
-  // At full resolution now, not half. Half was chosen when the result was "only
-  // read through a frosted lens", and that stopped being true: the bevel is the
-  // clear part of the panel, and since #17 and #18 it carries a lens and a
-  // moving highlight. It is the one place detail matters most and it was being
-  // handed the softest source in the pipeline.
+  // Resolution is chosen per capture, not fixed. Half used to be justified by
+  // "it is only read through a frosted lens", and that stopped being true — the
+  // bevel is the clear part, and since #17 and #18 it carries a lens and a
+  // moving highlight. But it is only untrue while the interface is *still*.
+  // Mid-interaction that same bevel is showing something that is moving, through
+  // frost, and full resolution there is paid for and thrown away.
   const world = document.getElementById("world");
-  const capture: Capture | null = world ? createCapture(world, 1) : null;
+  const capture: Capture | null = world ? createCapture(world) : null;
 
   /**
    * How often to capture. Two rates, because two different things move.
@@ -901,7 +901,10 @@ export function startBackground(watchOcclusion: boolean): Scene | null {
     lastCapture = now;
 
     const { gl, u } = glassLayer;
-    if (!capture.grab()) {
+    // Still: every pixel, at a tenth of a second. Moving: half, at a thirtieth.
+    // A full-resolution repaint thirty times a second is what made dragging a
+    // zone row inside the settings panel visibly stutter.
+    if (!capture.grab(now < busyUntil ? 0.5 : 1)) {
       // Falls back to the procedural backdrop rather than freezing on whatever
       // was captured last.
       gl.useProgram(glassLayer.program);
@@ -1174,21 +1177,12 @@ export function startBackground(watchOcclusion: boolean): Scene | null {
         };
         const had = live.find((l) => l.key === key);
         if (had) {
-          had.want = box;
+          had.box = box;
           had.leaving = false;
           return;
         }
-        // New. It starts as whatever opened it and grows into place; `goal`
-        // begins at the destination so the lag has nothing to catch up on and
-        // the arrival is the deformation, not a slide as well.
-        live.push({
-          key,
-          seed: r.from ?? pip(box),
-          want: box,
-          goal: box,
-          life: 0,
-          leaving: false,
-        });
+        // New. It starts as whatever opened it and grows into place.
+        live.push({ key, seed: r.from ?? pip(box), box, life: 0, leaving: false });
       });
       // Anything no longer named is on its way out, back into whatever it came
       // from. It keeps drawing until it has finished.

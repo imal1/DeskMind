@@ -1327,6 +1327,10 @@ window.addEventListener("pointermove", (e) => {
 queryEl.addEventListener("input", () => {
   pick = 0;
   paintResults();
+  // The results list has no fixed height, so the panel grows and shrinks with
+  // every keystroke. Without this the shader keeps the rectangle it measured
+  // when the panel was empty, and the glass stops covering its own panel.
+  refreshGlass();
 });
 
 el("searchbtn").addEventListener("click", () => openSearch());

@@ -55,20 +55,24 @@ function reportCapture(name: string | null): void {
 export type Capture = {
   /** The canvas holding the most recent frame, ready to upload as a texture. */
   readonly canvas: HTMLCanvasElement;
-  /** Redraws the source element. Returns false if the capture failed. */
-  grab(): boolean;
-  readonly scale: number;
+  /**
+   * Redraws the source element at `scale`, and returns false if it failed.
+   *
+   * The scale is per call rather than fixed at construction because what the
+   * capture is worth depends on what is happening: a still interface is being
+   * studied through the bevel and wants every pixel, one mid-interaction is
+   * seen through frost and motion and does not.
+   */
+  grab(scale: number): boolean;
 };
 
 /**
  * Returns null when the API is unavailable, which is a normal outcome — callers
  * fall back to composing the backdrop procedurally.
  *
- * `scale` trades fidelity for cost. The capture is only ever read through a
- * frosted, displaced lens, so half resolution is invisible in the result and
- * quarters the work of what is, after all, a full repaint of the interface.
+ * Scale is chosen per grab; see `Capture.grab`.
  */
-export function createCapture(source: Element, scale = 0.5): Capture | null {
+export function createCapture(source: Element): Capture | null {
   const canvas = document.createElement("canvas");
   const ctx = canvas.getContext("2d", { alpha: false });
   if (!ctx) return null;
@@ -82,8 +86,7 @@ export function createCapture(source: Element, scale = 0.5): Capture | null {
 
   return {
     canvas,
-    scale,
-    grab(): boolean {
+    grab(scale: number): boolean {
       if (broken) return false;
 
       const w = Math.max(1, Math.round(window.innerWidth * scale));
